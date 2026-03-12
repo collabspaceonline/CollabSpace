@@ -69,8 +69,12 @@ io.on('connection', (socket) => {
     const producer = await peers[socket.id].sendTransport.produce({ kind, rtpParameters });
     producers.push({ id: producer.id, socketId: socket.id, kind: producer.kind });
 
-    // Tell everyone else in the room that a new track is available!
-    socket.broadcast.emit('new-producer', { producerId: producer.id, socketId: socket.id, kind: producer.kind });
+    // Tell everyone (including sender for their own video) that a new track is available
+    if (producer.kind === 'video') {
+      io.emit('new-producer', { producerId: producer.id, socketId: socket.id, kind: producer.kind });
+    } else {
+      socket.broadcast.emit('new-producer', { producerId: producer.id, socketId: socket.id, kind: producer.kind });
+    }
     callback({ id: producer.id });
   });
 
@@ -89,7 +93,7 @@ io.on('connection', (socket) => {
 
   // Let new users know about existing videos
   socket.on('getProducers', (callback) => {
-    callback(producers);
+    callback(producers.filter(p => !(p.socketId === socket.id && p.kind === 'audio')));
   });
 
   socket.on('disconnect', () => {

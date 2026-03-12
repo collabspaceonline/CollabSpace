@@ -5,10 +5,10 @@ import { io, Socket } from "socket.io-client";
 import { Device } from "mediasoup-client";
 
 let socket: Socket;
-let device: Device;
+let device: Device | null;
 let sendTransport: any;
 let recvTransport: any;
-let localStream: MediaStream;
+let localStream: MediaStream | null;
 let audioProducer: any;
 let videoProducer: any;
 
@@ -63,10 +63,12 @@ export default function MeetingLobby() {
   };
 
   const createSendTransport = async () => {
+    if (!device) throw new Error("Mediasoup device not loaded yet.");
+    const d = device;
     const { params } = await new Promise<any>((resolve) =>
       socket.emit('createWebRtcTransport', { sender: true }, resolve)
     );
-    sendTransport = device.createSendTransport(params);
+    sendTransport = d.createSendTransport(params);
 
     sendTransport.on('connect', async ({ dtlsParameters }: any, callback: any, errback: any) => {
       try {
@@ -85,10 +87,12 @@ export default function MeetingLobby() {
   };
 
   const createRecvTransport = async () => {
+    if (!device) throw new Error("Mediasoup device not loaded yet.");
+    const d = device;
     const { params } = await new Promise<any>((resolve) =>
       socket.emit('createWebRtcTransport', { sender: false }, resolve)
     );
-    recvTransport = device.createRecvTransport(params);
+    recvTransport = d.createRecvTransport(params);
 
     recvTransport.on('connect', async ({ dtlsParameters }: any, callback: any, errback: any) => {
       try {
@@ -115,19 +119,26 @@ export default function MeetingLobby() {
   };
 
   const consumeRemoteTrack = async ({ producerId, socketId, kind }: { producerId: string; socketId: string; kind: string }) => {
+    if (!device || !recvTransport) {
+      console.warn("Cannot consume track yet (device/recvTransport not ready).", { producerId, socketId, kind });
+      return;
+    }
+    const d = device;
+    const rt = recvTransport;
+
     const result = await new Promise<any>((resolve) =>
-      socket.emit('consume', { rtpCapabilities: device.rtpCapabilities, producerId }, resolve)
+      socket.emit('consume', { rtpCapabilities: d.rtpCapabilities, producerId }, resolve)
     );
 
     if (result.error) { console.error('Cannot consume:', result.error); return; }
 
-    const consumer = await recvTransport.consume(result.params);
+    const consumer = await rt.consume(result.params);
 
     // Merge audio + video from the same peer into a single MediaStream
     setRemoteStreams(prev => {
       const existingIndex = prev.findIndex(s => s.socketId === socketId);
       if (existingIndex >= 0) {
-        const existing = prev[existingIndex];
+        const existing = prev[existingIndex]!;
         const newStream = new MediaStream([...existing.stream.getTracks(), consumer.track]);
         const updated = [...prev];
         updated[existingIndex] = { socketId, stream: newStream };
