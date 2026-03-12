@@ -29,7 +29,7 @@ async function createWebRtcTransport(router) {
   return new Promise(async (resolve, reject) => {
     try {
       const transport = await router.createWebRtcTransport({
-        listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }],
+        listenIps: [{ ip: '0.0.0.0', announcedIp: process.env.ANNOUNCED_IP || '127.0.0.1' }],
         enableUdp: true, enableTcp: true, preferUdp: true,
       });
       transport.on('dtlsstatechange', dtlsState => { if (dtlsState === 'closed') transport.close(); });
@@ -67,10 +67,10 @@ io.on('connection', (socket) => {
   // 4. PRODUCE (Receive video from user)
   socket.on('transport-produce', async ({ kind, rtpParameters }, callback) => {
     const producer = await peers[socket.id].sendTransport.produce({ kind, rtpParameters });
-    producers.push({ id: producer.id, socketId: socket.id });
-    
-    // Tell everyone else in the room that a new video is available!
-    socket.broadcast.emit('new-producer', producer.id);
+    producers.push({ id: producer.id, socketId: socket.id, kind: producer.kind });
+
+    // Tell everyone else in the room that a new track is available!
+    socket.broadcast.emit('new-producer', { producerId: producer.id, socketId: socket.id, kind: producer.kind });
     callback({ id: producer.id });
   });
 
@@ -89,7 +89,7 @@ io.on('connection', (socket) => {
 
   // Let new users know about existing videos
   socket.on('getProducers', (callback) => {
-    callback(producers.map(p => p.id));
+    callback(producers);
   });
 
   socket.on('disconnect', () => {
