@@ -8,10 +8,9 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
 
 let worker;
-let router; 
-// We need to keep track of everyone's pipelines and video tracks!
-let peers = {}; 
-let producers = []; 
+
+// roomId -> { router, peers: { socketId: { sendTransport, recvTransport } }, producers: [] }
+const rooms = new Map();
 
 const mediaCodecs = [
   { kind: 'audio', mimeType: 'audio/opus', clockRate: 48000, channels: 2 },
@@ -20,9 +19,17 @@ const mediaCodecs = [
 
 async function createWorker() {
   worker = await mediasoup.createWorker({ logLevel: 'warn', rtcMinPort: 40000, rtcMaxPort: 49999 });
-  router = await worker.createRouter({ mediaCodecs });
-  console.log(`✅ Mediasoup Worker & Router running!`);
+  console.log(`✅ Mediasoup Worker running!`);
   return worker;
+}
+
+async function getOrCreateRoom(roomId) {
+  if (rooms.has(roomId)) return rooms.get(roomId);
+  const router = await worker.createRouter({ mediaCodecs });
+  const room = { router, peers: {}, producers: [] };
+  rooms.set(roomId, room);
+  console.log(`🏠 Room created: ${roomId}`);
+  return room;
 }
 
 async function createWebRtcTransport(router) {
@@ -40,66 +47,93 @@ async function createWebRtcTransport(router) {
 
 io.on('connection', (socket) => {
   console.log(`🔌 Client connected: ${socket.id}`);
-  peers[socket.id] = { sendTransport: null, recvTransport: null };
 
-  // 1. Handshake
-  socket.on('getRouterRtpCapabilities', (callback) => {
-    callback(router.rtpCapabilities);
+  // 0. Join a room — returns router RTP capabilities for the room
+  socket.on('joinRoom', async ({ roomId }, callback) => {
+    try {
+      const room = await getOrCreateRoom(roomId);
+      socket.roomId = roomId;
+      room.peers[socket.id] = { sendTransport: null, recvTransport: null };
+      socket.join(roomId);
+      console.log(`👤 ${socket.id} joined room: ${roomId}`);
+      callback({ rtpCapabilities: room.router.rtpCapabilities });
+    } catch (err) { callback({ error: err.message }); }
   });
 
-  // 2. Create Pipeline
+  // 1. Create Pipeline
   socket.on('createWebRtcTransport', async ({ sender }, callback) => {
     try {
-      const transport = await createWebRtcTransport(router);
-      if (sender) peers[socket.id].sendTransport = transport;
-      else peers[socket.id].recvTransport = transport;
-
+      const room = rooms.get(socket.roomId);
+      if (!room) return callback({ params: { error: 'Not in a room' } });
+      const transport = await createWebRtcTransport(room.router);
+      if (sender) room.peers[socket.id].sendTransport = transport;
+      else room.peers[socket.id].recvTransport = transport;
       callback({ params: { id: transport.id, iceParameters: transport.iceParameters, iceCandidates: transport.iceCandidates, dtlsParameters: transport.dtlsParameters } });
     } catch (err) { callback({ params: { error: err.message } }); }
   });
 
-  // 3. Connect Pipeline
+  // 2. Connect Pipeline
   socket.on('transport-connect', async ({ dtlsParameters, isSender }) => {
-    const transport = isSender ? peers[socket.id].sendTransport : peers[socket.id].recvTransport;
+    const room = rooms.get(socket.roomId);
+    if (!room) return;
+    const transport = isSender ? room.peers[socket.id].sendTransport : room.peers[socket.id].recvTransport;
     await transport.connect({ dtlsParameters });
   });
 
-  // 4. PRODUCE (Receive video from user)
+  // 3. PRODUCE (Receive track from user)
   socket.on('transport-produce', async ({ kind, rtpParameters }, callback) => {
-    const producer = await peers[socket.id].sendTransport.produce({ kind, rtpParameters });
-    producers.push({ id: producer.id, socketId: socket.id, kind: producer.kind });
+    const room = rooms.get(socket.roomId);
+    if (!room) return callback({ error: 'Not in a room' });
+    const producer = await room.peers[socket.id].sendTransport.produce({ kind, rtpParameters });
+    room.producers.push({ id: producer.id, socketId: socket.id, kind: producer.kind });
 
-    // Tell everyone (including sender for their own video) that a new track is available
+    // Notify everyone else in the room about the new track
     if (producer.kind === 'video') {
-      io.emit('new-producer', { producerId: producer.id, socketId: socket.id, kind: producer.kind });
+      io.to(socket.roomId).emit('new-producer', { producerId: producer.id, socketId: socket.id, kind: producer.kind });
     } else {
-      socket.broadcast.emit('new-producer', { producerId: producer.id, socketId: socket.id, kind: producer.kind });
+      socket.to(socket.roomId).emit('new-producer', { producerId: producer.id, socketId: socket.id, kind: producer.kind });
     }
     callback({ id: producer.id });
   });
 
-  // 5. CONSUME (Send video to user)
+  // 4. CONSUME (Send track to user)
   socket.on('consume', async ({ rtpCapabilities, producerId }, callback) => {
     try {
-      if (!router.canConsume({ producerId, rtpCapabilities })) {
+      const room = rooms.get(socket.roomId);
+      if (!room) return callback({ error: 'Not in a room' });
+      if (!room.router.canConsume({ producerId, rtpCapabilities })) {
         return callback({ error: 'Cannot consume' });
       }
-      const consumer = await peers[socket.id].recvTransport.consume({
+      const consumer = await room.peers[socket.id].recvTransport.consume({
         producerId, rtpCapabilities, paused: false
       });
       callback({ params: { id: consumer.id, producerId: consumer.producerId, kind: consumer.kind, rtpParameters: consumer.rtpParameters } });
     } catch (error) { callback({ error: error.message }); }
   });
 
-  // Let new users know about existing videos
+  // Let new users know about existing producers in the room
   socket.on('getProducers', (callback) => {
-    callback(producers.filter(p => !(p.socketId === socket.id && p.kind === 'audio')));
+    const room = rooms.get(socket.roomId);
+    if (!room) return callback([]);
+    callback(room.producers.filter(p => !(p.socketId === socket.id && p.kind === 'audio')));
   });
 
   socket.on('disconnect', () => {
     console.log(`❌ Client disconnected: ${socket.id}`);
-    delete peers[socket.id];
-    producers = producers.filter(p => p.socketId !== socket.id);
+    const roomId = socket.roomId;
+    if (!roomId) return;
+    const room = rooms.get(roomId);
+    if (!room) return;
+    delete room.peers[socket.id];
+    room.producers = room.producers.filter(p => p.socketId !== socket.id);
+    // Notify remaining peers that this peer left
+    socket.to(roomId).emit('peer-disconnected', { socketId: socket.id });
+    // Clean up empty rooms
+    if (Object.keys(room.peers).length === 0) {
+      room.router.close();
+      rooms.delete(roomId);
+      console.log(`🗑️  Room deleted (empty): ${roomId}`);
+    }
   });
 });
 
