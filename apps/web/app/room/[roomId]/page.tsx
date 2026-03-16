@@ -30,24 +30,34 @@ export default function RoomPage() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
-    const sfuUrl =
-      process.env.NEXT_PUBLIC_SFU_URL || `http://${window.location.hostname}:4000`;
+  const sfuUrl =
+    process.env.NEXT_PUBLIC_SFU_URL || `https://159.89.170.255`;
 
-    socket = io(sfuUrl, { transports: ["websocket"] });
+  socket = io(sfuUrl, {
+    transports: ["polling", "websocket"], // polling first, then upgrade to websocket
+    secure: true,
+    rejectUnauthorized: false,
+    reconnectionAttempts: 5,
+    reconnectionDelay: 1000,
+  });
 
-    socket.on("connect", () => setIsConnected(true));
-    socket.on("disconnect", () => setIsConnected(false));
+  socket.on("connect", () => setIsConnected(true));
+  socket.on("disconnect", () => setIsConnected(false));
 
-    socket.on("new-producer", ({ producerId, socketId, kind }: { producerId: string; socketId: string; kind: string }) => {
-      if (device && recvTransport) consumeRemoteTrack({ producerId, socketId, kind });
-    });
+  socket.on("connect_error", (err) => {
+    console.error("Socket connection error:", err.message);
+  });
 
-    socket.on("peer-disconnected", ({ socketId }: { socketId: string }) => {
-      setRemoteStreams(prev => prev.filter(s => s.socketId !== socketId));
-    });
+  socket.on("new-producer", ({ producerId, socketId, kind }: { producerId: string; socketId: string; kind: string }) => {
+    if (device && recvTransport) consumeRemoteTrack({ producerId, socketId, kind });
+  });
 
-    return () => { socket.disconnect(); };
-  }, []);
+  socket.on("peer-disconnected", ({ socketId }: { socketId: string }) => {
+    setRemoteStreams(prev => prev.filter(s => s.socketId !== socketId));
+  });
+
+  return () => { socket.disconnect(); };
+}, []);
 
   const startCamera = async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
