@@ -5,6 +5,8 @@ import { useParams, useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
 import { Device } from "mediasoup-client";
 
+export const runtime = "edge";
+
 let socket: Socket;
 let device: Device | null;
 let sendTransport: any;
@@ -28,7 +30,10 @@ export default function RoomPage() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
-    socket = io(`http://${window.location.hostname}:4000`);
+    const sfuUrl =
+      process.env.NEXT_PUBLIC_SFU_URL || `http://${window.location.hostname}:4000`;
+
+    socket = io(sfuUrl, { transports: ["websocket"] });
 
     socket.on("connect", () => setIsConnected(true));
     socket.on("disconnect", () => setIsConnected(false));
