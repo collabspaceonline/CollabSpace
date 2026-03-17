@@ -31,12 +31,11 @@ export default function RoomPage() {
 
   useEffect(() => {
   const sfuUrl =
-    process.env.NEXT_PUBLIC_SFU_URL || `https://159.89.170.255`;
+    process.env.NEXT_PUBLIC_SFU_URL || "https://159.89.170.255.nip.io";
 
   socket = io(sfuUrl, {
     transports: ["polling", "websocket"], // polling first, then upgrade to websocket
     secure: true,
-    rejectUnauthorized: false,
     reconnectionAttempts: 5,
     reconnectionDelay: 1000,
   });
