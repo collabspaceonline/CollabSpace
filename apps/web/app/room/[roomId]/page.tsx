@@ -31,7 +31,7 @@ export default function RoomPage() {
 
   useEffect(() => {
   const sfuUrl =
-    process.env.NEXT_PUBLIC_SFU_URL || "https://159.89.170.255.nip.io";
+    process.env.NEXT_PUBLIC_SFU_URL || "http://localhost:4000";
 
   socket = io(sfuUrl, {
     transports: ["polling", "websocket"], // polling first, then upgrade to websocket
@@ -135,7 +135,7 @@ export default function RoomPage() {
       existingProducers.forEach(p => consumeRemoteTrack({ producerId: p.id, socketId: p.socketId, kind: p.kind }));
     });
   };
-
+  
   const consumeRemoteTrack = async ({ producerId, socketId, kind }: { producerId: string; socketId: string; kind: string }) => {
     if (!device || !recvTransport) {
       console.warn("Cannot consume track yet (device/recvTransport not ready).", { producerId, socketId, kind });
