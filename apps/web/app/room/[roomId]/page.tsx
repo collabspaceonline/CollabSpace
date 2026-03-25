@@ -3,12 +3,10 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
-import { Device } from "mediasoup-client";
-
-export const runtime = "edge";
+import type { Device as DeviceType } from "mediasoup-client";
 
 let socket: Socket;
-let device: Device | null;
+let device: DeviceType | null;
 let sendTransport: any;
 let recvTransport: any;
 let localStream: MediaStream | null;
@@ -73,6 +71,7 @@ export default function RoomPage() {
   const loadMediasoupDevice = async () => {
     socket.emit("joinRoom", { roomId }, async ({ rtpCapabilities, error }: any) => {
       if (error) { console.error("Failed to join room:", error); return; }
+      const { Device } = await import("mediasoup-client");
       device = new Device();
       await device.load({ routerRtpCapabilities: rtpCapabilities });
       await createSendTransport();
