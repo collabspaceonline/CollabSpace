@@ -4,15 +4,15 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
 import { Device } from "mediasoup-client";
-// fabric v6 — clean named imports
+// fabric v6 — clean named imports (Removed IText)
 import {
   Canvas as FabricCanvas,
   Rect as FabricRect,
   Ellipse as FabricEllipse,
   Line as FabricLine,
-  IText as FabricIText,
   PencilBrush,
   util as fabricUtil,
+  ActiveSelection,
 } from "fabric";
 
 export const runtime = "edge";
@@ -26,8 +26,8 @@ let localStream: MediaStream | null;
 let audioProducer: any;
 let videoProducer: any;
 
-// ─── Fabric shape type ────────────────────────────────────────────────────────
-type ToolType = "select" | "rect" | "circle" | "line" | "text" | "pen" | "eraser";
+// ─── Fabric shape type (Removed 'text') ───────────────────────────────────────
+type ToolType = "select" | "rect" | "circle" | "line" | "pen" | "eraser";
 
 // ─── Throttle helper ──────────────────────────────────────────────────────────
 function throttle<T extends (...args: any[]) => void>(fn: T, ms: number): T {
@@ -43,6 +43,26 @@ function fabricObjToShape(obj: any & { shapeId?: string }): any {
   const json = obj.toObject(["shapeId"]);
   return { ...json, id: obj.shapeId };
 }
+
+// ─── Dedicated Video Component to prevent flickering ─────────────────────────
+const RemoteVideo = ({ stream }: { stream: MediaStream }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  return (
+    <video
+      ref={videoRef}
+      autoPlay
+      playsInline
+      className="absolute inset-0 w-full h-full object-cover"
+    />
+  );
+};
 
 export default function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
@@ -75,10 +95,11 @@ export default function RoomPage() {
   const strokeColorRef = useRef(strokeColor);
   const strokeWidthRef = useRef(strokeWidth);
   const opacityRef = useRef(opacity);
-  const suppressEmitRef = useRef(false); // prevent echo loops
+  const suppressEmitRef = useRef(false);
 
   // Drawing state for freeform shapes
   const isDrawingShapeRef = useRef(false);
+  const isErasingRef = useRef(false); // Used for continuous drag-to-erase
   const originRef = useRef<{ x: number; y: number } | null>(null);
   const activeShapeRef = useRef<any | null>(null);
   const lineRef = useRef<any | null>(null);
@@ -110,13 +131,15 @@ export default function RoomPage() {
       case "eraser":
         fc.selection = false;
         fc.defaultCursor = "cell";
+        fc.discardActiveObject(); // Force drop any active selection so it doesn't swallow clicks
         break;
       case "select":
         break;
       default:
-        // rect / circle / line / text — handled in mouse events
+        // rect / circle / line
         fc.selection = false;
         fc.defaultCursor = "crosshair";
+        fc.discardActiveObject(); 
         break;
     }
     fc.renderAll();
@@ -127,15 +150,6 @@ export default function RoomPage() {
     if (!socket || suppressEmitRef.current) return;
     socket.emit("wb:createShape", { shape: fabricObjToShape(obj) });
   }, []);
-
-  const emitUpdate = useCallback(
-    throttle((obj: any & { shapeId?: string }, version: number) => {
-      if (!socket || suppressEmitRef.current) return;
-      const shape = fabricObjToShape(obj);
-      socket.emit("wb:updateShape", { id: obj.shapeId, changes: shape, clientVersion: version });
-    }, 30),
-    []
-  );
 
   const emitDelete = useCallback((id: string) => {
     if (!socket || suppressEmitRef.current) return;
@@ -160,10 +174,12 @@ export default function RoomPage() {
       backgroundColor: "transparent",
       selection: true,
       preserveObjectStacking: true,
+      // Gives a 15px radius cushion to clicking, making thin lines easy to erase
+      targetFindTolerance: 15, 
     });
     fabricRef.current = fc;
 
-    // ── Grid background (static SVG overlay drawn with fabric's own canvas) ──
+    // ── Grid background ──
     const drawGrid = () => {
       const ctx = fc.lowerCanvasEl.getContext("2d")!;
       const w = fc.width!;
@@ -189,12 +205,11 @@ export default function RoomPage() {
       const t = toolRef.current;
       if (t === "select" || t === "pen") return;
 
-      const pointer = fc.getScenePoint(opt.e);
-
-      // Eraser: remove clicked object
+      // ERASER: Click to remove
       if (t === "eraser") {
+        isErasingRef.current = true; // Start the drag-to-erase stroke
         const target = opt.target as (any & { shapeId?: string }) | null;
-        if (target) {
+        if (target && target.shapeId) {
           const id = target.shapeId;
           fc.remove(target);
           if (id) emitDelete(id);
@@ -203,24 +218,7 @@ export default function RoomPage() {
         return;
       }
 
-      if (t === "text") {
-        const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        const txt = new FabricIText("Text", {
-          left: pointer.x,
-          top: pointer.y,
-          fontFamily: "'DM Mono', monospace",
-          fontSize: strokeWidthRef.current * 8 + 12,
-          fill: fillColorRef.current,
-          opacity: opacityRef.current,
-        }) as any;
-        txt.shapeId = id;
-        fc.add(txt);
-        fc.setActiveObject(txt);
-        txt.enterEditing();
-        emitCreate(txt);
-        setShapeCount(fc.getObjects().length);
-        return;
-      }
+      const pointer = fc.getScenePoint(opt.e);
 
       // Rect / circle / line — start drag
       isDrawingShapeRef.current = true;
@@ -268,10 +266,23 @@ export default function RoomPage() {
 
     // ── Mouse move ────────────────────────────────────────────────────────
     fc.on("mouse:move", (opt) => {
+      const t = toolRef.current;
+
+      // ERASER: Continuous Swipe-to-Erase Feature
+      if (t === "eraser" && isErasingRef.current) {
+        const target = fc.findTarget(opt.e) as (any & { shapeId?: string }) | null;
+        if (target && target.shapeId) {
+          const id = target.shapeId;
+          fc.remove(target);
+          if (id) emitDelete(id);
+          setShapeCount(fc.getObjects().length);
+        }
+        return;
+      }
+
       if (!isDrawingShapeRef.current || !originRef.current) return;
       const pointer = fc.getScenePoint(opt.e);
       const { x: ox, y: oy } = originRef.current;
-      const t = toolRef.current;
 
       if (t === "rect" && activeShapeRef.current) {
         const r = activeShapeRef.current as any;
@@ -299,6 +310,13 @@ export default function RoomPage() {
 
     // ── Mouse up ──────────────────────────────────────────────────────────
     fc.on("mouse:up", () => {
+      const t = toolRef.current;
+
+      if (t === "eraser") {
+        isErasingRef.current = false;
+        return;
+      }
+
       if (!isDrawingShapeRef.current) return;
       isDrawingShapeRef.current = false;
       originRef.current = null;
@@ -321,12 +339,45 @@ export default function RoomPage() {
       setShapeCount(fc.getObjects().length);
     });
 
-    // ── Object modified (move / resize / rotate) ──────────────────────────
+    // ── Object modified (move / resize / rotate single OR multiple) ─────────
     fc.on("object:modified", (opt) => {
-      const obj = opt.target as (any & { shapeId?: string });
-      if (!obj?.shapeId) return;
-      const shape = fabricObjToShape(obj);
-      socket?.emit("wb:updateShape", { id: obj.shapeId, changes: shape, clientVersion: (obj as any).__version ?? 0 });
+      const target = opt.target as any;
+      if (!target) return;
+
+      if (target.type === "activeSelection" || target.type === "group") {
+        target.getObjects().forEach((obj: any) => {
+          if (!obj.shapeId) return;
+
+          // 1. Calculate the true global position
+          const matrix = obj.calcTransformMatrix();
+          const globalTransform = fabricUtil.qrDecompose(matrix);
+
+          // 2. Export the base shape data
+          const shape = fabricObjToShape(obj);
+
+          // 3. OVERWRITE the relative coordinates
+          shape.left = globalTransform.translateX;
+          shape.top = globalTransform.translateY;
+          shape.scaleX = globalTransform.scaleX;
+          shape.scaleY = globalTransform.scaleY;
+          shape.angle = globalTransform.angle;
+
+          // 4. Emit absolute positioning
+          socket?.emit("wb:updateShape", { 
+            id: obj.shapeId, 
+            changes: shape, 
+            clientVersion: obj.__version ?? 0 
+          });
+        });
+        
+      } else if (target.shapeId) {
+        const shape = fabricObjToShape(target);
+        socket?.emit("wb:updateShape", { 
+          id: target.shapeId, 
+          changes: shape, 
+          clientVersion: target.__version ?? 0 
+        });
+      }
     });
 
     // ── Selection state ───────────────────────────────────────────────────
@@ -346,7 +397,6 @@ export default function RoomPage() {
   // ─── Init / destroy on whiteboard toggle ──────────────────────────────────
   useEffect(() => {
     if (!showWhiteboard) { destroyFabric(); return; }
-    // Give the DOM a tick to mount
     const t = setTimeout(initFabric, 0);
     return () => clearTimeout(t);
   }, [showWhiteboard, initFabric, destroyFabric]);
@@ -362,7 +412,6 @@ export default function RoomPage() {
         if (!fc || !shapes.length) return;
         suppressEmitRef.current = true;
         fc.loadFromJSON({ version: "5.3.0", objects: shapes.map(s => ({ ...s, shapeId: s.id })) }, () => {
-          // Re-attach shapeIds after deserialization
           fc.getObjects().forEach((obj: any, i: number) => {
             (obj as any).shapeId = shapes[i]?.id;
           });
@@ -399,7 +448,7 @@ export default function RoomPage() {
     socket.on("wb:shapeCreated", ({ shape }: { shape: any }) => {
       const fc = fabricRef.current;
       if (!fc) return;
-      if (findByShapeId(shape.id)) return; // already have it
+      if (findByShapeId(shape.id)) return; 
       suppressEmitRef.current = true;
       (async () => {
         const objs: any[] = await fabricUtil.enlivenObjects([{ ...shape, shapeId: shape.id }]);
@@ -486,7 +535,6 @@ export default function RoomPage() {
     socket?.emit("wb:clearBoard");
   };
 
-  // Update pen brush when color/width changes while in pen mode
   useEffect(() => {
     const fc = fabricRef.current;
     if (!fc || !fc.isDrawingMode) return;
@@ -606,7 +654,6 @@ export default function RoomPage() {
     { id: "circle", icon: "◯", label: "Circle / Ellipse" },
     { id: "line",   icon: "╱", label: "Line" },
     { id: "pen",    icon: "✏", label: "Freehand Pen" },
-    { id: "text",   icon: "T", label: "Text (click to place)" },
     { id: "eraser", icon: "⌫", label: "Eraser" },
   ];
 
@@ -782,9 +829,7 @@ export default function RoomPage() {
                   <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
                     Peer ({remote.socketId.substring(0, 4)})
                   </span>
-                  <video autoPlay playsInline
-                    ref={v => { if (v) v.srcObject = remote.stream; }}
-                    className="absolute inset-0 w-full h-full object-cover" />
+                  <RemoteVideo stream={remote.stream} />
                 </div>
               ))}
               {!isMediaActive && remoteStreams.length === 0 && (
@@ -812,7 +857,7 @@ export default function RoomPage() {
                 <span className="absolute top-1 left-1 text-[9px] bg-black/60 text-white px-1 rounded z-10">
                   {r.socketId.substring(0, 4)}
                 </span>
-                <video autoPlay playsInline ref={v => { if (v) v.srcObject = r.stream; }} className="w-full h-full object-cover" />
+                <RemoteVideo stream={r.stream} />
               </div>
             ))}
             {isProducing && (
