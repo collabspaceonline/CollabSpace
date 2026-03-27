@@ -54,6 +54,13 @@ export default function RoomPage() {
   const [showWhiteboard, setShowWhiteboard] = useState(false);
   const [socketReady, setSocketReady] = useState(false);
 
+  // Re-attach local stream whenever the video element mounts or remounts
+  useEffect(() => {
+    if (localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream;
+    }
+  }, [showWhiteboard, isMediaActive]);
+
   // ─── Socket setup ──────────────────────────────────────────────────────────
   useEffect(() => {
     const sfuUrl = process.env.NEXT_PUBLIC_SFU_URL || "http://localhost:4000";
@@ -69,7 +76,7 @@ export default function RoomPage() {
     socket.on("connect_error", (err) => console.error("Socket error:", err.message));
 
     socket.on("new-producer", ({ producerId, socketId, kind }: any) => {
-      if (device && recvTransport) consumeRemoteTrack({ producerId, socketId, kind });
+      if (device && recvTransport && socketId !== socket.id) consumeRemoteTrack({ producerId, socketId, kind });
     });
     socket.on("peer-disconnected", ({ socketId }: any) => {
       setRemoteStreams(prev => prev.filter(s => s.socketId !== socketId));
@@ -138,7 +145,7 @@ export default function RoomPage() {
     if (audioTrack) audioProducer = await sendTransport.produce({ track: audioTrack });
     setIsProducing(true);
     socket.emit("getProducers", (existing: any[]) => {
-      existing.forEach(p => consumeRemoteTrack({ producerId: p.id, socketId: p.socketId, kind: p.kind }));
+      existing.filter(p => p.socketId !== socket.id).forEach(p => consumeRemoteTrack({ producerId: p.id, socketId: p.socketId, kind: p.kind }));
     });
   };
 
@@ -182,7 +189,7 @@ export default function RoomPage() {
   };
 
   return (
-    <main className="flex min-h-screen flex-col bg-[#0d0f1a] text-white">
+    <main className="flex h-screen flex-col bg-[#0d0f1a] text-white overflow-hidden">
       {/* ── Top Bar ─────────────────────────────────────────────────────────── */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-white/10 bg-[#111320]">
         <div className="flex items-center gap-3">
@@ -203,15 +210,10 @@ export default function RoomPage() {
       </header>
 
       {/* ── Main Area ───────────────────────────────────────────────────────── */}
-      <div className="flex-1 flex overflow-hidden">
-
-        {/* ── Whiteboard panel ─────────────────────────────────────────────── */}
-        {showWhiteboard && socketReady && (
-          <Whiteboard socket={socket} />
-        )}
+      <div className="flex-1 flex flex-row overflow-hidden min-h-0">
 
         {/* ── Video panel ───────────────────────────────────────────────────── */}
-        {!showWhiteboard && (
+        {!showWhiteboard ? (
           <div className="flex-1 flex flex-col p-6 overflow-auto">
             <div className="flex flex-wrap justify-center gap-3 mb-6">
               <button onClick={startCamera} disabled={isMediaActive}
@@ -269,33 +271,74 @@ export default function RoomPage() {
               )}
             </div>
           </div>
+        ) : (
+          /* ── Left video panel when whiteboard is open ─────────────────────── */
+          <div className="flex-1 flex flex-col p-4 overflow-auto border-r border-white/10 bg-[#0d0f1a]">
+            <div className="flex flex-wrap justify-center gap-2 mb-4">
+              <button onClick={startCamera} disabled={isMediaActive}
+                className={`px-3 py-1.5 rounded-lg font-semibold text-xs shadow-md transition-all
+                  ${isMediaActive ? "bg-white/10 text-white/30 cursor-not-allowed" : "bg-white/10 hover:bg-white/15 text-white"}`}>
+                📷 Camera
+              </button>
+              <button onClick={loadMediasoupDevice} disabled={!isMediaActive || deviceLoaded}
+                className={`px-3 py-1.5 rounded-lg font-semibold text-xs shadow-md transition-all
+                  ${!isMediaActive || deviceLoaded ? "bg-white/10 text-white/30 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-500 text-white"}`}>
+                🔗 Connect
+              </button>
+              <button onClick={produceMedia} disabled={!deviceLoaded || isProducing}
+                className={`px-3 py-1.5 rounded-lg font-semibold text-xs shadow-md transition-all
+                  ${!deviceLoaded || isProducing ? "bg-white/10 text-white/30 cursor-not-allowed" : "bg-emerald-600 hover:bg-emerald-500 text-white"}`}>
+                🎥 Join
+              </button>
+              {isProducing && (
+                <>
+                  <button onClick={toggleMute}
+                    className={`px-3 py-1.5 rounded-lg font-semibold text-xs shadow-md transition-all
+                      ${isMuted ? "bg-yellow-500/80 text-white" : "bg-indigo-600 hover:bg-indigo-500 text-white"}`}>
+                    {isMuted ? "🔇 Unmute" : "🎤 Mute"}
+                  </button>
+                  <button onClick={endCall}
+                    className="px-3 py-1.5 rounded-lg font-semibold text-xs bg-red-600 hover:bg-red-500 text-white shadow-md transition-all">
+                    📵 End
+                  </button>
+                </>
+              )}
+            </div>
+
+            <p className="text-[10px] text-white/30 font-mono uppercase tracking-widest mb-3 text-center">Participants</p>
+            <div className="flex flex-col gap-3">
+              {isMediaActive && (
+                <div className="relative aspect-video bg-black rounded-xl overflow-hidden border-2 border-emerald-500/50">
+                  <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
+                    You{isMuted ? " (Muted)" : ""}
+                  </span>
+                  <video ref={localVideoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
+                </div>
+              )}
+              {remoteStreams.map((remote) => (
+                <div key={remote.socketId} className="relative aspect-video bg-black rounded-xl overflow-hidden border border-white/10">
+                  <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
+                    Peer ({remote.socketId.substring(0, 4)})
+                  </span>
+                  <RemoteVideo stream={remote.stream} />
+                </div>
+              ))}
+              {!isMediaActive && remoteStreams.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-10 text-white/20">
+                  <div className="text-4xl mb-2">📹</div>
+                  <p className="text-xs">No participants</p>
+                </div>
+              )}
+            </div>
+          </div>
         )}
 
-        {/* ── Floating video strip when whiteboard is open ──────────────────── */}
-        {showWhiteboard && (isMediaActive || remoteStreams.length > 0) && (
-          <div className="w-52 flex flex-col gap-2 p-3 bg-[#111320] border-l border-white/10 overflow-y-auto">
-            <p className="text-[10px] text-white/30 font-mono uppercase tracking-widest mb-1">Participants</p>
-            {isMediaActive && (
-              <div className="relative aspect-video bg-black rounded-lg overflow-hidden border border-emerald-500/30">
-                <span className="absolute top-1 left-1 text-[9px] bg-black/60 text-white px-1 rounded z-10">You</span>
-                <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-              </div>
-            )}
-            {remoteStreams.map((r) => (
-              <div key={r.socketId} className="relative aspect-video bg-black rounded-lg overflow-hidden border border-white/10">
-                <span className="absolute top-1 left-1 text-[9px] bg-black/60 text-white px-1 rounded z-10">
-                  {r.socketId.substring(0, 4)}
-                </span>
-                <RemoteVideo stream={r.stream} />
-              </div>
-            ))}
-            {isProducing && (
-              <button onClick={toggleMute}
-                className={`mt-auto w-full py-1.5 rounded-lg text-xs font-semibold transition-all
-                  ${isMuted ? "bg-yellow-500/80" : "bg-indigo-600"}`}>
-                {isMuted ? "Unmute" : "Mute"}
-              </button>
-            )}
+        {/* ── Whiteboard panel — right side, 60% width, 80% height ─────────── */}
+        {showWhiteboard && socketReady && (
+          <div className="w-[60%] flex items-center justify-center bg-[#0d0f1a] p-4">
+            <div className="w-full h-[80vh] flex flex-col overflow-hidden rounded-xl border border-white/10">
+              <Whiteboard socket={socket} />
+            </div>
           </div>
         )}
       </div>
