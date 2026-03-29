@@ -9,7 +9,7 @@ const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } 
 
 let worker;
 
-// roomId -> { router, peers: { socketId: { sendTransport, recvTransport } }, producers: [] }
+// roomId -> { router, peers: { socketId: { sendTransport, recvTransport } }, producers: [], whiteboard: { shapes: Map<id, shape>, version: number } }
 const rooms = new Map();
 
 const mediaCodecs = [
@@ -26,7 +26,15 @@ async function createWorker() {
 async function getOrCreateRoom(roomId) {
   if (rooms.has(roomId)) return rooms.get(roomId);
   const router = await worker.createRouter({ mediaCodecs });
-  const room = { router, peers: {}, producers: [] };
+  const room = {
+    router,
+    peers: {},
+    producers: [],
+    whiteboard: {
+      shapes: new Map(), // id -> shape object
+      version: 0,        // monotonically increasing version counter
+    }
+  };
   rooms.set(roomId, room);
   console.log(`🏠 Room created: ${roomId}`);
   return room;
@@ -48,7 +56,7 @@ async function createWebRtcTransport(router) {
 io.on('connection', (socket) => {
   console.log(`🔌 Client connected: ${socket.id}`);
 
-  // 0. Join a room — returns router RTP capabilities for the room
+  // 0. Join a room
   socket.on('joinRoom', async ({ roomId }, callback) => {
     try {
       const room = await getOrCreateRoom(roomId);
@@ -80,14 +88,13 @@ io.on('connection', (socket) => {
     await transport.connect({ dtlsParameters });
   });
 
-  // 3. PRODUCE (Receive track from user)
+  // 3. PRODUCE
   socket.on('transport-produce', async ({ kind, rtpParameters }, callback) => {
     const room = rooms.get(socket.roomId);
     if (!room) return callback({ error: 'Not in a room' });
     const producer = await room.peers[socket.id].sendTransport.produce({ kind, rtpParameters });
     room.producers.push({ id: producer.id, socketId: socket.id, kind: producer.kind });
 
-    // Notify everyone else in the room about the new track
     if (producer.kind === 'video') {
       io.to(socket.roomId).emit('new-producer', { producerId: producer.id, socketId: socket.id, kind: producer.kind });
     } else {
@@ -96,7 +103,7 @@ io.on('connection', (socket) => {
     callback({ id: producer.id });
   });
 
-  // 4. CONSUME (Send track to user)
+  // 4. CONSUME
   socket.on('consume', async ({ rtpCapabilities, producerId }, callback) => {
     try {
       const room = rooms.get(socket.roomId);
@@ -111,12 +118,108 @@ io.on('connection', (socket) => {
     } catch (error) { callback({ error: error.message }); }
   });
 
-  // Let new users know about existing producers in the room
   socket.on('getProducers', (callback) => {
     const room = rooms.get(socket.roomId);
     if (!room) return callback([]);
     callback(room.producers.filter(p => !(p.socketId === socket.id && p.kind === 'audio')));
   });
+
+  // ─── WHITEBOARD EVENTS ─────────────────────────────────────────────────────
+
+  /**
+   * wb:getState — called when a user opens the whiteboard.
+   * Returns the current list of shapes and the room version.
+   */
+  socket.on('wb:getState', (callback) => {
+    const room = rooms.get(socket.roomId);
+    if (!room) return callback({ shapes: [], version: 0 });
+    callback({
+      shapes: Array.from(room.whiteboard.shapes.values()),
+      version: room.whiteboard.version,
+    });
+  });
+
+  /**
+   * wb:createShape — a client added a new shape.
+   * Payload: { shape: { id, type, x, y, width?, height?, radius?, color, strokeColor, strokeWidth, text?, rotation, createdAt } }
+   */
+  socket.on('wb:createShape', ({ shape }) => {
+    const room = rooms.get(socket.roomId);
+    if (!room || !shape?.id) return;
+
+    // Prevent duplicate inserts
+    if (room.whiteboard.shapes.has(shape.id)) return;
+
+    room.whiteboard.version += 1;
+    const stamped = { ...shape, version: room.whiteboard.version, updatedAt: Date.now() };
+    room.whiteboard.shapes.set(shape.id, stamped);
+
+    // Broadcast to everyone ELSE (creator already has it)
+    socket.to(socket.roomId).emit('wb:shapeCreated', { shape: stamped, version: room.whiteboard.version });
+  });
+
+  /**
+   * wb:updateShape — a client moved/resized/edited a shape.
+   * Payload: { id, changes: { x?, y?, width?, height?, radius?, color?, text?, rotation? }, clientVersion }
+   * clientVersion is used for optimistic-concurrency: we only apply if clientVersion >= shape.version
+   */
+  socket.on('wb:updateShape', ({ id, changes, clientVersion }) => {
+    const room = rooms.get(socket.roomId);
+    if (!room || !id) return;
+
+    const existing = room.whiteboard.shapes.get(id);
+    if (!existing) return;
+
+    // Reject stale updates (last-write-wins with version gate)
+    if (clientVersion !== undefined && clientVersion < existing.version) {
+      // Send back the authoritative shape so the client can reconcile
+      socket.emit('wb:shapeConflict', { shape: existing });
+      return;
+    }
+
+    room.whiteboard.version += 1;
+    const updated = {
+      ...existing,
+      ...changes,
+      id, // id is immutable
+      version: room.whiteboard.version,
+      updatedAt: Date.now(),
+    };
+    room.whiteboard.shapes.set(id, updated);
+
+    // Broadcast update to ALL clients in room (including sender, for ACK/reconcile)
+    io.to(socket.roomId).emit('wb:shapeUpdated', { shape: updated, version: room.whiteboard.version });
+  });
+
+  /**
+   * wb:deleteShape — a client deleted a shape.
+   * Payload: { id }
+   */
+  socket.on('wb:deleteShape', ({ id }) => {
+    const room = rooms.get(socket.roomId);
+    if (!room || !id) return;
+    if (!room.whiteboard.shapes.has(id)) return;
+
+    room.whiteboard.version += 1;
+    room.whiteboard.shapes.delete(id);
+
+    io.to(socket.roomId).emit('wb:shapeDeleted', { id, version: room.whiteboard.version });
+  });
+
+  /**
+   * wb:clearBoard — clear the entire whiteboard.
+   */
+  socket.on('wb:clearBoard', () => {
+    const room = rooms.get(socket.roomId);
+    if (!room) return;
+
+    room.whiteboard.shapes.clear();
+    room.whiteboard.version += 1;
+
+    io.to(socket.roomId).emit('wb:boardCleared', { version: room.whiteboard.version });
+  });
+
+  // ─── DISCONNECT ────────────────────────────────────────────────────────────
 
   socket.on('disconnect', () => {
     console.log(`❌ Client disconnected: ${socket.id}`);
@@ -126,9 +229,7 @@ io.on('connection', (socket) => {
     if (!room) return;
     delete room.peers[socket.id];
     room.producers = room.producers.filter(p => p.socketId !== socket.id);
-    // Notify remaining peers that this peer left
     socket.to(roomId).emit('peer-disconnected', { socketId: socket.id });
-    // Clean up empty rooms
     if (Object.keys(room.peers).length === 0) {
       room.router.close();
       rooms.delete(roomId);

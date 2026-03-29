@@ -12,8 +12,9 @@
     "check-types": "next typegen && tsc --noEmit"
   },
   "dependencies": {
-    "@repo/ui": "*",
     "@opennextjs/cloudflare": "^1.7.0",
+    "@repo/ui": "*",
+    "fabric": "^7.2.0",
     "mediasoup-client": "^3.18.7",
     "next": "16.1.5",
     "react": "^19.2.0",
@@ -23,6 +24,7 @@
   "devDependencies": {
     "@repo/eslint-config": "*",
     "@repo/typescript-config": "*",
+    "@types/fabric": "^5.3.11",
     "@types/node": "^22.15.3",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
