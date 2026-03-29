@@ -6,7 +6,11 @@ const cors = require('cors')
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
-app.use(cors());
+app.use(cors({
+  origin: ["http://localhost:3000", "https://yourdomain.com"],
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
 let worker;
 
 // roomId -> { router, peers: { socketId: { sendTransport, recvTransport } }, producers: [], whiteboard: { shapes: Map<id, shape>, version: number } }
