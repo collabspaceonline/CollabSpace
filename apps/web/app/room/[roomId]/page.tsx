@@ -62,7 +62,7 @@ export default function RoomPage() {
 
   // ─── Socket setup ──────────────────────────────────────────────────────────
   useEffect(() => {
-    const sfuUrl = process.env.NEXT_PUBLIC_SFU_URL || "https://188.166.209.187.nip.io";
+    const sfuUrl = process.env.NEXT_PUBLIC_SFU_URL || "https://139.59.77.81.nip.io";
     socket = io(sfuUrl, {
       transports: ["polling", "websocket"],
       secure: true,
