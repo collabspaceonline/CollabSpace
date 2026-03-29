@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
 import Whiteboard from "../../components/Whiteboard";
 
-export const runtime = "edge";
+// export const runtime = "edge";
 
 // ─── Mediasoup globals ────────────────────────────────────────────────────────
 let socket: Socket;
@@ -64,7 +64,7 @@ export default function RoomPage() {
   useEffect(() => {
     const sfuUrl = process.env.NEXT_PUBLIC_SFU_URL || "https://139.59.77.81.nip.io";
     socket = io(sfuUrl, {
-      transports: ["polling", "websocket"],
+      transports: ["websocket"],
       secure: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
