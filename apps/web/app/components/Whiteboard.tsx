@@ -262,14 +262,15 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
       const t = toolRef.current;
       if (t === "select" || t === "pen") return;
 
-      // ERASER: use findTarget so it hits shapes even with selection disabled
+      // ERASER: erase object under cursor on click / drag
       if (t === "eraser") {
         isErasingRef.current = true;
-        const target = fc.findTarget(opt.e) as (any & { shapeId?: string }) | null;
-        if (target && target.shapeId) {
+        const target = (opt as any).target as (any & { shapeId?: string }) | undefined;
+        if (target?.shapeId) {
           const id = target.shapeId;
           fc.remove(target);
-          if (id) emitDelete(id);
+          emitDelete(id);
+          fc.requestRenderAll();
           setShapeCount(fc.getObjects().length);
         }
         return;
@@ -344,11 +345,12 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
 
       // ERASER: Continuous Swipe-to-Erase Feature
       if (t === "eraser" && isErasingRef.current) {
-        const target = fc.findTarget(opt.e) as (any & { shapeId?: string }) | null;
-        if (target && target.shapeId) {
+        const target = (opt as any).target as (any & { shapeId?: string }) | undefined;
+        if (target?.shapeId && target.canvas) {
           const id = target.shapeId;
           fc.remove(target);
-          if (id) emitDelete(id);
+          emitDelete(id);
+          fc.requestRenderAll();
           setShapeCount(fc.getObjects().length);
         }
         return;
@@ -504,9 +506,29 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
       }
     });
 
-    // ── Selection state ──────────────────────────────────────────────────────
-    fc.on("selection:created", () => setHasSelection(true));
-    fc.on("selection:updated", () => setHasSelection(true));
+    // ── Selection state — sync toolbar from selected object ─────────────────
+    const syncToolbarFrom = (obj: any) => {
+      if (!obj) return;
+      if (obj.type === "rect" || obj.type === "ellipse") {
+        if (obj.fill && typeof obj.fill === "string") setFillColor(obj.fill);
+        if (obj.stroke && typeof obj.stroke === "string") setStrokeColor(obj.stroke);
+      } else {
+        // line, path (pen/arrow) — primary colour lives in stroke
+        if (obj.stroke && typeof obj.stroke === "string") setFillColor(obj.stroke);
+      }
+      if (obj.strokeWidth != null) setStrokeWidth(obj.strokeWidth);
+      if (obj.opacity != null) setOpacity(obj.opacity);
+    };
+    fc.on("selection:created", () => {
+      setHasSelection(true);
+      const sel = fc.getActiveObjects();
+      if (sel.length === 1) syncToolbarFrom(sel[0]);
+    });
+    fc.on("selection:updated", () => {
+      setHasSelection(true);
+      const sel = fc.getActiveObjects();
+      if (sel.length === 1) syncToolbarFrom(sel[0]);
+    });
     fc.on("selection:cleared", () => setHasSelection(false));
 
     applyFabricMode();
@@ -680,6 +702,47 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
     socket?.emit("wb:clearBoard");
   };
 
+  // ─── Toolbar → selection sync helpers ─────────────────────────────────────
+  const applyToSelection = (setter: (obj: any) => void) => {
+    const fc = fabricRef.current;
+    if (!fc) return;
+    const objs = fc.getActiveObjects();
+    if (!objs.length) return;
+    objs.forEach((obj: any) => { setter(obj); });
+    fc.renderAll();
+    objs.forEach((obj: any) => { if (obj.shapeId) emitUpdate(obj); });
+  };
+
+  const handleFillColor = (val: string) => {
+    setFillColor(val);
+    applyToSelection((obj) => {
+      if (obj.type === "rect" || obj.type === "ellipse") {
+        obj.set({ fill: val });
+      } else {
+        obj.set({ stroke: val });
+      }
+    });
+  };
+
+  const handleStrokeColor = (val: string) => {
+    setStrokeColor(val);
+    applyToSelection((obj) => {
+      if (obj.type === "rect" || obj.type === "ellipse") {
+        obj.set({ stroke: val });
+      }
+    });
+  };
+
+  const handleStrokeWidth = (val: number) => {
+    setStrokeWidth(val);
+    applyToSelection((obj) => obj.set({ strokeWidth: val }));
+  };
+
+  const handleOpacity = (val: number) => {
+    setOpacity(val);
+    applyToSelection((obj) => obj.set({ opacity: val }));
+  };
+
   // ─── Tool palette ───────────────────────────────────────────────────────────
   const tools: { id: ToolType; icon: React.ReactNode; label: string }[] = [
     { id: "select", icon: "↖", label: "Select / Move" },
@@ -737,14 +800,14 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
         {/* Fill color */}
         <label className="flex items-center gap-1.5 text-xs text-white/50">
           Fill
-          <input type="color" value={fillColor} onChange={e => setFillColor(e.target.value)}
+          <input type="color" value={fillColor} onChange={e => handleFillColor(e.target.value)}
             className="w-7 h-7 rounded cursor-pointer bg-transparent border border-white/20" />
         </label>
 
         {/* Stroke color */}
         <label className="flex items-center gap-1.5 text-xs text-white/50">
           Stroke
-          <input type="color" value={strokeColor} onChange={e => setStrokeColor(e.target.value)}
+          <input type="color" value={strokeColor} onChange={e => handleStrokeColor(e.target.value)}
             className="w-7 h-7 rounded cursor-pointer bg-transparent border border-white/20" />
         </label>
 
@@ -752,7 +815,7 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
         <label className="flex items-center gap-1.5 text-xs text-white/50">
           Width
           <input type="range" min="1" max="12" value={strokeWidth}
-            onChange={e => setStrokeWidth(Number(e.target.value))}
+            onChange={e => handleStrokeWidth(Number(e.target.value))}
             className="w-20 accent-indigo-400" />
           <span className="text-white/30 w-3">{strokeWidth}</span>
         </label>
@@ -761,7 +824,7 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
         <label className="flex items-center gap-1.5 text-xs text-white/50">
           Opacity
           <input type="range" min="0.1" max="1" step="0.05" value={opacity}
-            onChange={e => setOpacity(Number(e.target.value))}
+            onChange={e => handleOpacity(Number(e.target.value))}
             className="w-16 accent-indigo-400" />
         </label>
 
