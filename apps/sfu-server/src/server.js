@@ -220,6 +220,18 @@ io.on('connection', (socket) => {
     io.to(socket.roomId).emit('wb:boardCleared', { version: room.whiteboard.version });
   });
 
+  // ─── LIVE CURSORS ───────────────────────────────────────────────────────────
+
+  socket.on('wb:cursorMove', ({ x, y }) => {
+    if (!socket.roomId) return;
+    socket.to(socket.roomId).emit('wb:cursorMove', { socketId: socket.id, x, y });
+  });
+
+  socket.on('wb:cursorLeave', () => {
+    if (!socket.roomId) return;
+    socket.to(socket.roomId).emit('wb:cursorLeave', { socketId: socket.id });
+  });
+
   // ─── DISCONNECT ────────────────────────────────────────────────────────────
 
   socket.on('disconnect', () => {
@@ -228,6 +240,7 @@ io.on('connection', (socket) => {
     if (!roomId) return;
     const room = rooms.get(roomId);
     if (!room) return;
+    socket.to(roomId).emit('wb:cursorLeave', { socketId: socket.id });
     delete room.peers[socket.id];
     room.producers = room.producers.filter(p => p.socketId !== socket.id);
     socket.to(roomId).emit('peer-disconnected', { socketId: socket.id });
