@@ -29,6 +29,13 @@ function makeArrowPath(x1: number, y1: number, x2: number, y2: number, headLen =
 const VIRTUAL_W = 5000;
 const VIRTUAL_H = 5000;
 
+/** Derive a stable HSL colour from a socket ID string. */
+function cursorColor(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash);
+  return `hsl(${((hash % 360) + 360) % 360}, 70%, 60%)`;
+}
+
 function fabricObjToShape(obj: any & { shapeId?: string }): any {
   const json = obj.toObject(["shapeId"]);
   // FabricLine.toObject() uses calcLinePoints() which returns coords relative
@@ -56,9 +63,11 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
   const [wbVersion, setWbVersion] = useState(0);
   const [shapeCount, setShapeCount] = useState(0);
   const [hasSelection, setHasSelection] = useState(false);
+  const [remoteCursors, setRemoteCursors] = useState<Record<string, { x: number; y: number }>>({});
 
   const canvasElRef = useRef<HTMLCanvasElement>(null);
   const minimapRef = useRef<HTMLCanvasElement>(null);
+  const cursorContainerRef = useRef<HTMLDivElement>(null);
   const fabricRef = useRef<any | null>(null);
   const toolRef = useRef<ToolType>("select");
   const fillColorRef = useRef(fillColor);
@@ -77,6 +86,7 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
   const isPanningRef = useRef(false);
   const lastPanRef = useRef({ x: 0, y: 0 });
   const liveThrottleRef = useRef(0);
+  const cursorThrottleRef = useRef(0);
 
   // Keep refs in sync with state
   useEffect(() => { toolRef.current = tool; applyFabricMode(); }, [tool]);
@@ -119,19 +129,22 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
   }, []);
 
   // ─── Emit helpers ───────────────────────────────────────────────────────────
+  // NOTE: These are only called from direct user actions, never from remote
+  // change handlers, so they must NOT check suppressEmitRef (which guards
+  // against feedback loops when applying remote state).
   const emitCreate = useCallback((obj: any & { shapeId?: string }) => {
-    if (!socket || suppressEmitRef.current) return;
+    if (!socket) return;
     socket.emit("wb:createShape", { shape: fabricObjToShape(obj) });
   }, [socket]);
 
   // Live update during drawing — no clientVersion so server skips version gate
   const emitUpdate = useCallback((obj: any & { shapeId?: string }) => {
-    if (!socket || suppressEmitRef.current || !obj?.shapeId) return;
+    if (!socket || !obj?.shapeId) return;
     socket.emit("wb:updateShape", { id: obj.shapeId, changes: fabricObjToShape(obj) });
   }, [socket]);
 
   const emitDelete = useCallback((id: string) => {
-    if (!socket || suppressEmitRef.current) return;
+    if (!socket) return;
     socket.emit("wb:deleteShape", { id });
   }, [socket]);
 
@@ -203,23 +216,27 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
 
       ctx.clearRect(0, 0, mw, mh);
 
-      // Draw each shape as a filled rectangle at its bounding box
+      const vt = fc.viewportTransform!;
+      const zoom = fc.getZoom();
+
+      // Draw each shape as a filled rectangle at its bounding box.
+      // getBoundingRect() returns screen-space coords — convert to world first.
       fc.getObjects().forEach((obj: any) => {
         const b = obj.getBoundingRect();
+        const wl = (b.left - vt[4]) / zoom;
+        const wt = (b.top  - vt[5]) / zoom;
+        const ww = b.width  / zoom;
+        const wh = b.height / zoom;
         ctx.fillStyle = "rgba(255,255,255,0.4)";
         ctx.fillRect(
-          b.left  * sx,
-          b.top   * sy,
-          Math.max(b.width  * sx, 2),
-          Math.max(b.height * sy, 2),
+          wl * sx,
+          wt * sy,
+          Math.max(ww * sx, 2),
+          Math.max(wh * sy, 2),
         );
       });
 
       // Draw the current viewport as a blue stroke rectangle.
-      // Inverse of viewportTransform: screen (0,0)→(W,H) maps to world:
-      //   worldX = (screenX - vt[4]) / zoom,  worldY = (screenY - vt[5]) / zoom
-      const vt = fc.viewportTransform!;
-      const zoom = fc.getZoom();
       const vpX = (-vt[4] / zoom) * sx;
       const vpY = (-vt[5] / zoom) * sy;
       const vpW = (fc.width!  / zoom) * sx;
@@ -229,6 +246,15 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
       ctx.strokeRect(vpX, vpY, vpW, vpH);
     };
     fc.on("after:render", drawMinimap);
+
+    // ── Sync cursor overlay transform with Fabric viewport ───────────────
+    const syncCursorOverlay = () => {
+      const container = cursorContainerRef.current;
+      if (!container) return;
+      const vt = fc.viewportTransform!;
+      container.style.transform = `matrix(${vt[0]},${vt[1]},${vt[2]},${vt[3]},${vt[4]},${vt[5]})`;
+    };
+    fc.on("after:render", syncCursorOverlay);
 
     // ── Resize ──────────────────────────────────────────────────────────────
     const onResize = () => {
@@ -329,6 +355,16 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
 
     // ── Mouse move ──────────────────────────────────────────────────────────
     fc.on("mouse:move", (opt) => {
+      // Emit live cursor position to other users (throttled ~30fps)
+      {
+        const now = Date.now();
+        if (now - cursorThrottleRef.current >= 33) {
+          cursorThrottleRef.current = now;
+          const cp = fc.getScenePoint(opt.e);
+          socket?.emit("wb:cursorMove", { x: cp.x, y: cp.y });
+        }
+      }
+
       // Pan: shift viewport translate by mouse delta, then clamp to virtual bounds
       if (isPanningRef.current) {
         const me = opt.e as MouseEvent;
@@ -506,6 +542,9 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
       }
     });
 
+    // ── Emit cursor leave when mouse exits canvas ────────────────────────
+    fc.on("mouse:out", () => { socket?.emit("wb:cursorLeave"); });
+
     // ── Selection state — sync toolbar from selected object ─────────────────
     const syncToolbarFrom = (obj: any) => {
       if (!obj) return;
@@ -579,6 +618,27 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
       if (!fc) return;
       if (findByShapeId(shape.id)) return;
       suppressEmitRef.current = true;
+
+      // Lines need special handling: toObject() serialises relative coords
+      // but the server stores absolute x1/y1/x2/y2 — enlivenObjects would
+      // double-offset them via left/top. Create the line directly instead.
+      if (shape.type === "line") {
+        const l = new FabricLine([shape.x1, shape.y1, shape.x2, shape.y2], {
+          stroke: shape.stroke,
+          strokeWidth: shape.strokeWidth,
+          opacity: shape.opacity ?? 1,
+          selectable: true,
+          objectCaching: false,
+        }) as any;
+        l.shapeId = shape.id;
+        l.__version = shape.version ?? 0;
+        fc.add(l);
+        fc.renderAll();
+        setShapeCount(fc.getObjects().length);
+        suppressEmitRef.current = false;
+        return;
+      }
+
       (async () => {
         const objs: any[] = await fabricUtil.enlivenObjects([{ ...shape, shapeId: shape.id }]);
         objs.forEach(obj => {
@@ -622,6 +682,7 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
         obj.set({ ...shape });
       }
       (obj as any).__version = shape.version ?? 0;
+      (obj as any).dirty = true;   // invalidate object cache so Fabric redraws it
       obj.setCoords();
       fc.renderAll();
       suppressEmitRef.current = false;
@@ -657,12 +718,36 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
       suppressEmitRef.current = false;
     });
 
+    // ── Live cursors from other users ──────────────────────────────────────
+    socket.on("wb:cursorMove", ({ socketId, x, y }: { socketId: string; x: number; y: number }) => {
+      setRemoteCursors(prev => ({ ...prev, [socketId]: { x, y } }));
+    });
+
+    socket.on("wb:cursorLeave", ({ socketId }: { socketId: string }) => {
+      setRemoteCursors(prev => {
+        const next = { ...prev };
+        delete next[socketId];
+        return next;
+      });
+    });
+
+    socket.on("peer-disconnected", ({ socketId }: { socketId: string }) => {
+      setRemoteCursors(prev => {
+        const next = { ...prev };
+        delete next[socketId];
+        return next;
+      });
+    });
+
     return () => {
       socket.off("wb:shapeCreated");
       socket.off("wb:shapeUpdated");
       socket.off("wb:shapeDeleted");
       socket.off("wb:boardCleared");
       socket.off("wb:shapeConflict");
+      socket.off("wb:cursorMove");
+      socket.off("wb:cursorLeave");
+      socket.off("peer-disconnected");
     };
   }, [socket]);
 
@@ -868,6 +953,34 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
       {/* Canvas */}
       <div className="flex-1 relative overflow-hidden bg-[#0a0c18]">
         <canvas ref={canvasElRef} className="absolute inset-0" />
+
+        {/* Remote cursor overlay — positioned in world coords, transformed by viewport */}
+        <div
+          ref={cursorContainerRef}
+          className="absolute top-0 left-0 pointer-events-none"
+          style={{ transformOrigin: "0 0", width: VIRTUAL_W, height: VIRTUAL_H }}
+        >
+          {Object.entries(remoteCursors).map(([id, { x, y }]) => {
+            const color = cursorColor(id);
+            return (
+              <div
+                key={id}
+                className="absolute"
+                style={{ left: x, top: y, transition: "left 0.05s linear, top 0.05s linear" }}
+              >
+                <svg width="18" height="22" viewBox="0 0 18 22" fill="none" className="drop-shadow-lg" style={{ marginLeft: -2, marginTop: -2 }}>
+                  <path d="M1 1L1 18L5.5 13.5L10 21L13 19.5L8.5 12L15 11L1 1Z" fill={color} stroke="#000" strokeWidth="1.2" />
+                </svg>
+                <div
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded-full whitespace-nowrap mt-0.5 ml-3"
+                  style={{ backgroundColor: color, color: "#000" }}
+                >
+                  {id.slice(0, 6)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
 
         {/* Minimap */}
         <div className="absolute bottom-6 right-6 z-20 rounded-lg overflow-hidden shadow-xl border border-white/20 bg-[#0a0c18]/80 backdrop-blur-sm">
