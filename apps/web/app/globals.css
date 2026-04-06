@@ -2,16 +2,62 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Light Theme (default) ─────────────────────────────────────────────────── */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --app-bg: #f1f1f1;
+  --canvas-bg: #ffffff;
+  --surface: #ffffff;
+  --surface-hover: #e8e8e8;
+  --surface-elevated: #ffffff;
+  --border: #dadce0;
+  --text-primary: #202124;
+  --text-secondary: #5f6368;
+  --text-tertiary: #80868b;
+  --text-on-dark: #ffffff;
+  --control-bar-bg: #ffffff;
+  --control-btn-bg: transparent;
+  --control-btn-hover: rgba(0, 0, 0, 0.06);
+  --control-btn-active: rgba(0, 0, 0, 0.1);
+  --header-bg: #ffffff;
+  --dropdown-bg: #ffffff;
+  --dropdown-hover: #f1f3f4;
+  --toolbar-bg: #ffffff;
+  --toolbar-btn-active: #e8f0fe;
+  --toolbar-btn-active-text: #1a73e8;
+  --badge-bg: rgba(0, 0, 0, 0.06);
+  --minimap-bg: rgba(255, 255, 255, 0.85);
+  --grid-line: rgba(0, 0, 0, 0.06);
+  --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ─── Dark Theme ────────────────────────────────────────────────────────────── */
+[data-theme="dark"] {
+  --app-bg: #131314;
+  --canvas-bg: #2b2b2c;
+  --surface: #1e1e1f;
+  --surface-hover: #2c2c2d;
+  --surface-elevated: #282829;
+  --border: rgba(255, 255, 255, 0.1);
+  --text-primary: #e3e3e3;
+  --text-secondary: #9aa0a6;
+  --text-tertiary: #6e7277;
+  --text-on-dark: #ffffff;
+  --control-bar-bg: #1e1e1f;
+  --control-btn-bg: transparent;
+  --control-btn-hover: rgba(255, 255, 255, 0.08);
+  --control-btn-active: rgba(255, 255, 255, 0.12);
+  --header-bg: #1e1e1f;
+  --dropdown-bg: #2b2b2c;
+  --dropdown-hover: #3c3c3d;
+  --toolbar-bg: #1e1e1f;
+  --toolbar-btn-active: rgba(138, 180, 248, 0.16);
+  --toolbar-btn-active-text: #8ab4f8;
+  --badge-bg: rgba(255, 255, 255, 0.08);
+  --minimap-bg: rgba(30, 30, 31, 0.85);
+  --grid-line: rgba(255, 255, 255, 0.035);
+  --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
 }
 
 html,
@@ -21,8 +67,8 @@ body {
 }
 
 body {
-  color: var(--foreground);
-  background: var(--background);
+  color: var(--text-primary);
+  background: var(--app-bg);
 }
 
 * {
@@ -36,19 +82,191 @@ a {
   text-decoration: none;
 }
 
-.imgDark {
-  display: none;
+/* ─── Google Meet Control Bar Buttons ───────────────────────────────────────── */
+.meet-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.2s ease, transform 0.1s ease;
+  background: var(--control-btn-bg);
+  color: var(--text-primary);
+  position: relative;
 }
 
-@media (prefers-color-scheme: dark) {
-  html {
-    color-scheme: dark;
-  }
+.meet-btn:hover {
+  background: var(--control-btn-hover);
+}
 
-  .imgLight {
-    display: none;
+.meet-btn:active {
+  background: var(--control-btn-active);
+  transform: scale(0.95);
+}
+
+.meet-btn.active-off {
+  background: #d93025;
+  color: #ffffff;
+}
+
+.meet-btn.active-off:hover {
+  background: #c5221f;
+}
+
+.meet-btn--end {
+  width: 56px;
+  height: 40px;
+  border-radius: 20px;
+  background: #ea4335;
+  color: #ffffff;
+}
+
+.meet-btn--end:hover {
+  background: #d93025;
+}
+
+.meet-btn--end:active {
+  background: #c5221f;
+}
+
+/* ─── Reactions Popover ─────────────────────────────────────────────────────── */
+.reactions-popover {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: 24px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  z-index: 50;
+}
+
+.reactions-popover button {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s, transform 0.1s;
+}
+
+.reactions-popover button:hover {
+  background: var(--control-btn-hover);
+  transform: scale(1.15);
+}
+
+.reactions-popover button:active {
+  transform: scale(0.95);
+}
+
+/* ─── Floating Reaction Animation ───────────────────────────────────────────── */
+.floating-reaction {
+  position: fixed;
+  left: 32px;
+  font-size: 36px;
+  pointer-events: none;
+  z-index: 9999;
+  animation: float-up 3s ease-out forwards;
+  will-change: transform, opacity;
+}
+
+@keyframes float-up {
+  0% {
+    opacity: 1;
+    transform: translateY(0) translateX(0) scale(1);
   }
-  .imgDark {
-    display: unset;
+  20% {
+    opacity: 1;
+    transform: translateY(-80px) translateX(12px) scale(1.1);
   }
+  40% {
+    transform: translateY(-180px) translateX(-8px) scale(1.05);
+  }
+  60% {
+    opacity: 0.8;
+    transform: translateY(-300px) translateX(14px) scale(1);
+  }
+  80% {
+    opacity: 0.4;
+    transform: translateY(-420px) translateX(-6px) scale(0.95);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-520px) translateX(10px) scale(0.85);
+  }
+}
+
+/* ─── Settings Dropdown ─────────────────────────────────────────────────────── */
+.settings-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 220px;
+  padding: 8px 0;
+  border-radius: 12px;
+  background: var(--dropdown-bg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  z-index: 50;
+}
+
+.settings-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  font-size: 14px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.settings-dropdown-item:hover {
+  background: var(--dropdown-hover);
+}
+
+/* ─── Theme Toggle Switch ───────────────────────────────────────────────────── */
+.theme-toggle {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  border-radius: 12px;
+  background: var(--text-tertiary);
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.25s;
+  flex-shrink: 0;
+}
+
+.theme-toggle.dark {
+  background: #8ab4f8;
+}
+
+.theme-toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #ffffff;
+  transition: transform 0.25s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.theme-toggle.dark::after {
+  transform: translateX(20px);
 }
