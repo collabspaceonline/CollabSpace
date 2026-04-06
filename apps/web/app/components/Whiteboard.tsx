@@ -52,9 +52,10 @@ function fabricObjToShape(obj: any & { shapeId?: string }): any {
 
 interface WhiteboardProps {
   socket: Socket;
+  theme?: "light" | "dark";
 }
 
-export default function Whiteboard({ socket }: WhiteboardProps) {
+export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) {
   const [tool, setTool] = useState<ToolType>("select");
   const [fillColor, setFillColor] = useState("#4f8ef7");
   const [strokeColor, setStrokeColor] = useState("#1a1a2e");
@@ -195,7 +196,7 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
       const ox = vt[4] % cell;
       const oy = vt[5] % cell;
       ctx.save();
-      ctx.strokeStyle = "rgba(255,255,255,0.035)";
+      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--grid-line").trim() || "rgba(255,255,255,0.035)";
       ctx.lineWidth = 1;
       for (let x = ox; x < w; x += cell) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
       for (let y = oy; y < h; y += cell) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
@@ -864,49 +865,51 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Toolbar */}
-      <div className="flex items-center gap-2 px-4 py-2 bg-[#111320] border-b border-white/10 flex-wrap">
+      <div className="flex items-center gap-2 px-4 py-2 flex-wrap" style={{ background: "var(--toolbar-bg)", borderBottom: "1px solid var(--border)" }}>
         {/* Tools */}
-        <div className="flex gap-1 bg-white/5 rounded-lg p-1">
+        <div className="flex gap-1 rounded-lg p-1" style={{ background: "var(--badge-bg)" }}>
           {tools.map(t => (
             <button
               key={t.id}
               onClick={() => setTool(t.id)}
               title={t.label}
-              className={`w-8 h-8 rounded-md text-sm font-bold transition-all flex items-center justify-center
-                ${tool === t.id ? "bg-indigo-500 text-white shadow-lg shadow-indigo-500/30" : "text-white/50 hover:text-white hover:bg-white/10"}`}
+              className="w-8 h-8 rounded-md text-sm font-bold transition-all flex items-center justify-center"
+              style={tool === t.id
+                ? { background: "var(--toolbar-btn-active)", color: "var(--toolbar-btn-active-text)", boxShadow: "var(--shadow)" }
+                : { color: "var(--text-tertiary)" }}
             >
               {t.icon}
             </button>
           ))}
         </div>
 
-        <div className="w-px h-6 bg-white/10" />
+        <div className="w-px h-6" style={{ background: "var(--border)" }} />
 
         {/* Fill color */}
-        <label className="flex items-center gap-1.5 text-xs text-white/50">
+        <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
           Fill
           <input type="color" value={fillColor} onChange={e => handleFillColor(e.target.value)}
-            className="w-7 h-7 rounded cursor-pointer bg-transparent border border-white/20" />
+            className="w-7 h-7 rounded cursor-pointer bg-transparent border" style={{ borderColor: "var(--border)" }} />
         </label>
 
         {/* Stroke color */}
-        <label className="flex items-center gap-1.5 text-xs text-white/50">
+        <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
           Stroke
           <input type="color" value={strokeColor} onChange={e => handleStrokeColor(e.target.value)}
-            className="w-7 h-7 rounded cursor-pointer bg-transparent border border-white/20" />
+            className="w-7 h-7 rounded cursor-pointer bg-transparent border" style={{ borderColor: "var(--border)" }} />
         </label>
 
         {/* Stroke width */}
-        <label className="flex items-center gap-1.5 text-xs text-white/50">
+        <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
           Width
           <input type="range" min="1" max="12" value={strokeWidth}
             onChange={e => handleStrokeWidth(Number(e.target.value))}
             className="w-20 accent-indigo-400" />
-          <span className="text-white/30 w-3">{strokeWidth}</span>
+          <span className="w-3" style={{ color: "var(--text-tertiary)" }}>{strokeWidth}</span>
         </label>
 
         {/* Opacity */}
-        <label className="flex items-center gap-1.5 text-xs text-white/50">
+        <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
           Opacity
           <input type="range" min="0.1" max="1" step="0.05" value={opacity}
             onChange={e => handleOpacity(Number(e.target.value))}
@@ -920,38 +923,38 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
           <>
             <button
               onClick={() => { const fc = fabricRef.current; if (!fc) return; const objs = fc.getActiveObjects(); objs.forEach((o: any) => { (o as any).set({ opacity: Math.max(0.1, (o.opacity ?? 1) - 0.1) }); }); fc.renderAll(); }}
-              className="px-2 py-1 rounded bg-white/5 text-white/50 text-xs hover:bg-white/10 transition-colors"
+              className="px-2 py-1 rounded text-xs transition-colors" style={{ background: "var(--badge-bg)", color: "var(--text-secondary)" }}
               title="Decrease opacity"
             >−α</button>
             <button
               onClick={() => { const fc = fabricRef.current; if (!fc) return; const objs = fc.getActiveObjects(); objs.forEach((o: any) => { (o as any).set({ opacity: Math.min(1, (o.opacity ?? 1) + 0.1) }); }); fc.renderAll(); }}
-              className="px-2 py-1 rounded bg-white/5 text-white/50 text-xs hover:bg-white/10 transition-colors"
+              className="px-2 py-1 rounded text-xs transition-colors" style={{ background: "var(--badge-bg)", color: "var(--text-secondary)" }}
               title="Increase opacity"
             >+α</button>
             <button
               onClick={() => { const fc = fabricRef.current; if (!fc) return; const obj = fc.getActiveObject(); if (obj) fc.bringObjectToFront(obj); fc.renderAll(); }}
-              className="px-2 py-1 rounded bg-white/5 text-white/50 text-xs hover:bg-white/10 transition-colors"
+              className="px-2 py-1 rounded text-xs transition-colors" style={{ background: "var(--badge-bg)", color: "var(--text-secondary)" }}
               title="Bring to front"
             >↑ Front</button>
             <button
               onClick={() => { const fc = fabricRef.current; if (!fc) return; const obj = fc.getActiveObject(); if (obj) fc.sendObjectToBack(obj); fc.renderAll(); }}
-              className="px-2 py-1 rounded bg-white/5 text-white/50 text-xs hover:bg-white/10 transition-colors"
+              className="px-2 py-1 rounded text-xs transition-colors" style={{ background: "var(--badge-bg)", color: "var(--text-secondary)" }}
               title="Send to back"
             >↓ Back</button>
             <button onClick={deleteSelected}
-              className="px-2 py-1 rounded bg-red-500/20 text-red-400 text-xs hover:bg-red-500/40 transition-colors">
+              className="px-2 py-1 rounded text-xs transition-colors" style={{ background: "rgba(234,67,53,0.15)", color: "#ea4335" }}>
               Delete
             </button>
           </>
         )}
         <button onClick={clearBoard}
-          className="px-2 py-1 rounded bg-white/5 text-white/40 text-xs hover:bg-white/10 transition-colors">
+          className="px-2 py-1 rounded text-xs transition-colors" style={{ background: "var(--badge-bg)", color: "var(--text-tertiary)" }}>
           Clear All
         </button>
       </div>
 
       {/* Canvas */}
-      <div className="flex-1 relative overflow-hidden bg-[#0a0c18]">
+      <div className="flex-1 relative overflow-hidden" style={{ background: "var(--canvas-bg)" }}>
         <canvas ref={canvasElRef} className="absolute inset-0" />
 
         {/* Remote cursor overlay — positioned in world coords, transformed by viewport */}
@@ -983,7 +986,7 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
         </div>
 
         {/* Minimap */}
-        <div className="absolute bottom-6 right-6 z-20 rounded-lg overflow-hidden shadow-xl border border-white/20 bg-[#0a0c18]/80 backdrop-blur-sm">
+        <div className="absolute bottom-6 right-6 z-20 rounded-lg overflow-hidden shadow-xl backdrop-blur-sm" style={{ background: "var(--minimap-bg)", border: "1px solid var(--border)" }}>
           <canvas
             ref={minimapRef}
             width={192}
@@ -991,12 +994,12 @@ export default function Whiteboard({ socket }: WhiteboardProps) {
             className="block"
             title="Minimap — blue rect is your current view"
           />
-          <div className="absolute bottom-1 left-2 text-[9px] text-white/20 font-mono pointer-events-none select-none">
+          <div className="absolute bottom-1 left-2 text-[9px] font-mono pointer-events-none select-none" style={{ color: "var(--text-tertiary)" }}>
             5000 × 5000
           </div>
         </div>
 
-        <div className="absolute bottom-3 right-4 text-[10px] text-white/20 font-mono pointer-events-none" style={{ bottom: "calc(128px + 2rem)" }}>
+        <div className="absolute right-4 text-[10px] font-mono pointer-events-none" style={{ color: "var(--text-tertiary)", bottom: "calc(128px + 2rem)" }}>
           v{wbVersion} · {shapeCount} obj
         </div>
       </div>
