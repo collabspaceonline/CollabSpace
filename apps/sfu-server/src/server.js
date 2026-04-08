@@ -232,6 +232,23 @@ io.on('connection', (socket) => {
     socket.to(socket.roomId).emit('wb:cursorLeave', { socketId: socket.id });
   });
 
+  /**
+   * wb:lockShape — temporary lock to prevent users from typing over each other
+   */
+  socket.on('wb:lockShape', ({ id, userId }) => {
+    if (!socket.roomId) return;
+    // Broadcast directly to others without saving to the Map
+    socket.to(socket.roomId).emit('wb:shapeLocked', { id, userId });
+  });
+
+  /**
+   * wb:unlockShape — release the temporary lock
+   */
+  socket.on('wb:unlockShape', ({ id }) => {
+    if (!socket.roomId) return;
+    socket.to(socket.roomId).emit('wb:shapeUnlocked', { id });
+  });
+
   // ─── DISCONNECT ────────────────────────────────────────────────────────────
 
   socket.on('disconnect', () => {
