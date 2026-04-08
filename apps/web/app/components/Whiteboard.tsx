@@ -11,9 +11,134 @@ import {
   Point as FabricPoint,
   PencilBrush,
   util as fabricUtil,
+  Textbox,
+  Shadow,
 } from "fabric";
 
-type ToolType = "select" | "rect" | "circle" | "line" | "arrow" | "pen" | "eraser";
+type ToolType = "select" | "rect" | "circle" | "line" | "arrow" | "pen" | "eraser" | "text";
+
+// Function to spawn a new Textbox
+function createLiveTextbox(canvas: any, pointer: { x: number, y: number }, defaultText: string = "Type here...") {
+  const textId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  
+  const textNode = new Textbox(defaultText, {
+    left: pointer.x,
+    top: pointer.y,
+    width: 200, // Initial width before wrapping occurs
+    fontSize: 24,
+    fill: "#1a1a2e", // Your default strokeColor
+    fontFamily: "sans-serif",
+    selectable: true,
+    objectCaching: false, // Prevents blurring during live typing
+  }) as any;
+
+  // Attach the custom ID property used in your architecture
+  textNode.shapeId = textId;
+  
+  canvas.add(textNode);
+  canvas.setActiveObject(textNode);
+  textNode.enterEditing();
+  textNode.selectAll();
+  
+  return textNode;
+}
+
+// Assuming 'broadcastPayload' is your function to send data over WebRTC/Sockets
+// and 'myUserId' is the local user's socket.id
+function setupLiveTextListeners(canvas: any, broadcastPayload: (data: any) => void, myUserId: string) {
+  
+  // 1. Lock the object when the user starts typing
+  canvas.on('text:editing:entered', (e: any) => {
+    const target = e.target;
+    if (!target || !target.shapeId) return;
+
+    broadcastPayload({
+      event: 'lock_text',
+      id: target.shapeId,
+      userId: myUserId
+    });
+  });
+
+  // 2. Broadcast the full string on every single keystroke
+  canvas.on('text:changed', (e: any) => {
+    const target = e.target;
+    if (!target || !target.shapeId) return;
+
+    // Send the entire text string and the width (to sync word-wrapping)
+    broadcastPayload({
+      event: 'update_text',
+      id: target.shapeId,
+      text: target.text,
+      width: target.width 
+    });
+  });
+
+  // 3. Unlock the object when the user clicks away
+  canvas.on('text:editing:exited', (e: any) => {
+    const target = e.target;
+    if (!target || !target.shapeId) return;
+
+    broadcastPayload({
+      event: 'unlock_text',
+      id: target.shapeId
+    });
+  });
+}
+
+function handleIncomingTextData(canvas: any, payload: any) {
+  if (!canvas) return;
+
+  // Helper function to find the Fabric object by your custom shapeId
+  const getObjectById = (id: string) => {
+    return canvas.getObjects().find((obj: any) => obj.shapeId === id);
+  };
+
+  const target = getObjectById(payload.id);
+  
+  // Edge Case: The object hasn't rendered on this client yet. 
+  // In a robust system, you might want to queue this or request a state sync.
+  if (!target) return; 
+
+  switch (payload.event) {
+    case 'lock_text':
+      // Lock the object so the local user cannot edit it
+      target.set({
+        selectable: false,
+        evented: false,
+        // Visual cue: Add a red glow to show someone else is editing
+        shadow: new Shadow({
+          color: 'rgba(234, 67, 53, 0.6)', 
+          blur: 10,
+          offsetX: 0,
+          offsetY: 0
+        })
+      });
+      target.dirty = true;
+      canvas.requestRenderAll();
+      break;
+
+    case 'update_text':
+      // Apply the exact string and width to maintain word-wrapping parity
+      target.set({
+        text: payload.text,
+        width: payload.width
+      });
+      target.dirty = true;
+      canvas.requestRenderAll();
+      break;
+
+    case 'unlock_text':
+      // Restore standard interactivity and remove the visual lock cue
+      target.set({
+        selectable: true,
+        evented: true,
+        shadow: null
+      });
+      target.dirty = true;
+      canvas.requestRenderAll();
+      break;
+  }
+}
 
 /** Build an SVG path string for a line with an open arrowhead at (x2, y2). */
 function makeArrowPath(x1: number, y1: number, x2: number, y2: number, headLen = 16): string {
@@ -278,6 +403,7 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
     // ── Mouse down ──────────────────────────────────────────────────────────
     fc.on("mouse:down", (opt) => {
       const me = opt.e as MouseEvent;
+
       // Alt key or middle mouse button → begin pan
       if (me.altKey || me.button === 1) {
         isPanningRef.current = true;
@@ -304,6 +430,34 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
       }
 
       const pointer = fc.getScenePoint(opt.e);
+
+      // Spawning a Textbox
+      if (t === "text") {
+        const textNode = new Textbox("", {
+          left: pointer.x, 
+          top: pointer.y,
+          width: 200, // Initial width before wrapping
+          fontSize: 24,
+          fill: fillColorRef.current,
+          fontFamily: "sans-serif",
+          selectable: true,
+          objectCaching: false, // Prevents blurring while typing
+        }) as any;
+        
+        textNode.shapeId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        fc.add(textNode);
+        
+        // Immediately make it active and enter typing mode
+        fc.setActiveObject(textNode);
+        textNode.enterEditing();
+        
+        emitCreate(textNode);
+        
+        // Auto-switch back to the select tool so the user doesn't 
+        // accidentally spawn 5 text boxes if they click around
+        setTool("select"); 
+        return;
+      }
 
       // Rect / circle / line — start drag
       isDrawingShapeRef.current = true;
@@ -352,6 +506,30 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
         activeShapeRef.current = l;
         emitCreate(l);
       }
+    });
+
+    // ── Live Text Sync (Sender) ──────────────────────────────────────────────
+    fc.on("text:changed", (opt: any) => {
+      const target = opt.target;
+      if (!target || !target.shapeId) return;
+      
+      // Fire the new text string through your existing update pipeline!
+      socket?.emit("wb:updateShape", {
+        id: target.shapeId,
+        changes: { text: target.text, width: target.width }
+      });
+    });
+
+    fc.on("text:editing:entered", (opt: any) => {
+      const target = opt.target;
+      if (!target || !target.shapeId) return;
+      socket?.emit("wb:lockShape", { id: target.shapeId, userId: socket?.id });
+    });
+
+    fc.on("text:editing:exited", (opt: any) => {
+      const target = opt.target;
+      if (!target || !target.shapeId) return;
+      socket?.emit("wb:unlockShape", { id: target.shapeId });
     });
 
     // ── Mouse move ──────────────────────────────────────────────────────────
@@ -663,7 +841,11 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
       const isActivelyDrawing =
         (activeShapeRef.current as any)?.shapeId === shape.id ||
         (lineRef.current as any)?.shapeId === shape.id;
-      if (isActivelyDrawing) {
+
+      // NEW: Check if the local user is currently typing in this exact text box
+      const isActivelyTyping = (obj as any).isEditing === true;
+
+      if (isActivelyDrawing || isActivelyTyping) {
         (obj as any).__version = shape.version ?? 0;
         return;
       }
@@ -680,7 +862,9 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
         if (shape.strokeWidth) (obj as any).strokeWidth = shape.strokeWidth;
         if (shape.opacity != null) (obj as any).opacity = shape.opacity;
       } else {
-        obj.set({ ...shape });
+        // ✅ FIX: Strip out the permanent 'type' and 'version' properties
+        const { type, version, ...safeShape } = shape;
+        obj.set(safeShape);
       }
       (obj as any).__version = shape.version ?? 0;
       (obj as any).dirty = true;   // invalidate object cache so Fabric redraws it
@@ -694,6 +878,43 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
       if (!fc) return;
       const obj = findByShapeId(id);
       if (obj) { fc.remove(obj); fc.renderAll(); setShapeCount(fc.getObjects().length); }
+    });
+
+    socket.on("wb:shapeLocked", ({ id, userId }: { id: string; userId: string }) => {
+      const fc = fabricRef.current;
+      if (!fc) return;
+      const obj = findByShapeId(id);
+      if (!obj) return;
+
+      suppressEmitRef.current = true;
+      obj.set({
+        selectable: false,
+        evented: false,
+        shadow: new Shadow({
+          color: 'rgba(234, 67, 53, 0.6)', 
+          blur: 10,
+          offsetX: 0,
+          offsetY: 0
+        })
+      });
+      fc.renderAll();
+      suppressEmitRef.current = false;
+    });
+
+    socket.on("wb:shapeUnlocked", ({ id }: { id: string }) => {
+      const fc = fabricRef.current;
+      if (!fc) return;
+      const obj = findByShapeId(id);
+      if (!obj) return;
+
+      suppressEmitRef.current = true;
+      obj.set({
+        selectable: true,
+        evented: true,
+        shadow: null
+      });
+      fc.renderAll();
+      suppressEmitRef.current = false;
     });
 
     socket.on("wb:boardCleared", () => {
@@ -712,7 +933,9 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
       const obj = findByShapeId(shape.id);
       if (!obj) return;
       suppressEmitRef.current = true;
-      obj.set({ ...shape });
+      // ✅ FIX: Strip out the permanent 'type' and 'version' properties
+      const { type, version, ...safeShape } = shape;
+      obj.set(safeShape);
       (obj as any).__version = shape.version ?? 0;
       obj.setCoords();
       fc.renderAll();
@@ -744,6 +967,8 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
       socket.off("wb:shapeCreated");
       socket.off("wb:shapeUpdated");
       socket.off("wb:shapeDeleted");
+      socket.off("wb:shapeLocked");
+      socket.off("wb:shapeUnlocked");
       socket.off("wb:boardCleared");
       socket.off("wb:shapeConflict");
       socket.off("wb:cursorMove");
@@ -832,6 +1057,7 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
   // ─── Tool palette ───────────────────────────────────────────────────────────
   const tools: { id: ToolType; icon: React.ReactNode; label: string }[] = [
     { id: "select", icon: "↖", label: "Select / Move" },
+    { id: "text",   icon: "T", label: "Text" },
     { id: "rect",   icon: "▭", label: "Rectangle" },
     { id: "circle", icon: "◯", label: "Circle / Ellipse" },
     { id: "line",  icon: "╱", label: "Line" },
