@@ -433,6 +433,44 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
 
       // Spawning a Textbox
       if (t === "text") {
+        // ✅ ADD THIS: Check if the user clicked on an existing text box first
+        let clickedExistingText = false;
+        const objects = fc.getObjects();
+        
+        // Loop backwards to check the top-most objects first
+        for (let i = objects.length - 1; i >= 0; i--) {
+          const obj = objects[i];
+          
+          // ✅ FIX 1: Ensure obj actually exists to satisfy the "possibly undefined" error
+          if (!obj) continue;
+
+          if ((obj.type === "textbox" || obj.type === "i-text") && obj.containsPoint(pointer)) {
+
+            // ✅ FIX 1: Prevent dual-editing! If it's locked by someone else, stop here.
+            if (obj.selectable === false) {
+              setTool("select"); // Optional: switch to select tool anyway
+              return; 
+            }
+            
+            // ✅ FIX 2: Cast the object to 'any' so TypeScript stops complaining about missing text methods
+            const textObj = obj as any; 
+
+            fc.setActiveObject(textObj);
+            textObj.enterEditing();
+            textObj.selectAll();
+            
+            // Switch back to the select tool so they can move it later
+            setTool("select"); 
+            clickedExistingText = true;
+            break;
+          }
+        }
+
+        // If they clicked existing text, stop here. Don't spawn a new one.
+        if (clickedExistingText) return;
+
+
+        // ✅ Original code: If they clicked empty space, spawn a new one
         const textNode = new Textbox("", {
           left: pointer.x, 
           top: pointer.y,
@@ -441,20 +479,16 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
           fill: fillColorRef.current,
           fontFamily: "sans-serif",
           selectable: true,
-          objectCaching: false, // Prevents blurring while typing
+          objectCaching: false, 
         }) as any;
         
         textNode.shapeId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
         fc.add(textNode);
         
-        // Immediately make it active and enter typing mode
         fc.setActiveObject(textNode);
         textNode.enterEditing();
         
         emitCreate(textNode);
-        
-        // Auto-switch back to the select tool so the user doesn't 
-        // accidentally spawn 5 text boxes if they click around
         setTool("select"); 
         return;
       }
@@ -516,7 +550,8 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
       // Fire the new text string through your existing update pipeline!
       socket?.emit("wb:updateShape", {
         id: target.shapeId,
-        changes: { text: target.text, width: target.width }
+        changes: { text: target.text, width: target.width },
+        clientVersion: target.__version ?? 0
       });
     });
 
@@ -866,6 +901,14 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
         const { type, version, ...safeShape } = shape;
         obj.set(safeShape);
       }
+
+      // ✅ FIX 2: Ensure the text property explicitly updates and forces a visual redraw
+      if ((obj.type === "textbox" || obj.type === "i-text") && shape.text !== undefined) {
+        (obj as any).text = shape.text;
+        obj.dirty = true;
+        fc.requestRenderAll(); // requestRenderAll is much more reliable for live syncs
+      }
+
       (obj as any).__version = shape.version ?? 0;
       (obj as any).dirty = true;   // invalidate object cache so Fabric redraws it
       obj.setCoords();
@@ -936,6 +979,14 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
       // ✅ FIX: Strip out the permanent 'type' and 'version' properties
       const { type, version, ...safeShape } = shape;
       obj.set(safeShape);
+
+      // ✅ FIX 2: Ensure the text property explicitly updates and forces a visual redraw
+      if ((obj.type === "textbox" || obj.type === "i-text") && shape.text !== undefined) {
+        (obj as any).text = shape.text;
+        obj.dirty = true;
+        fc.requestRenderAll(); // requestRenderAll is much more reliable for live syncs
+      }
+
       (obj as any).__version = shape.version ?? 0;
       obj.setCoords();
       fc.renderAll();
