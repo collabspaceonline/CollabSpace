@@ -6,7 +6,10 @@ const cors = require('cors')
 const app = express();
 app.use(cors({ origin: '*' }));
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
+const io = new Server(server, {
+  cors: { origin: '*', methods: ['GET', 'POST'] },
+  maxHttpBufferSize: 10 * 1024 * 1024, // 10 MB — allow image imports on whiteboard
+});
 
 let worker;
 

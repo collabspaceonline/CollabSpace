@@ -13,6 +13,7 @@ import {
   util as fabricUtil,
   Textbox,
   Shadow,
+  FabricImage,
 } from "fabric";
 
 type ToolType = "select" | "rect" | "circle" | "line" | "arrow" | "pen" | "eraser" | "text";
@@ -140,6 +141,31 @@ function handleIncomingTextData(canvas: any, payload: any) {
   }
 }
 
+/** Downscale an image data URL to at most `maxSide` px on the longest edge,
+ *  then re-encode as JPEG so the payload stays small enough to broadcast. */
+function compressImageDataUrl(dataUrl: string, maxSide: number, quality: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const imgEl = new Image();
+    imgEl.onload = () => {
+      const longest = Math.max(imgEl.width, imgEl.height);
+      const scale = longest > maxSide ? maxSide / longest : 1;
+      const w = Math.round(imgEl.width * scale);
+      const h = Math.round(imgEl.height * scale);
+      const c = document.createElement("canvas");
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext("2d");
+      if (!ctx) return reject(new Error("no 2d context"));
+      ctx.drawImage(imgEl, 0, 0, w, h);
+      // PNGs with transparency become opaque when exported as JPEG; for small
+      // PNGs that's fine here since we only care about image imports, not UI.
+      resolve(c.toDataURL("image/jpeg", quality));
+    };
+    imgEl.onerror = reject;
+    imgEl.src = dataUrl;
+  });
+}
+
 /** Build an SVG path string for a line with an open arrowhead at (x2, y2). */
 function makeArrowPath(x1: number, y1: number, x2: number, y2: number, headLen = 16): string {
   const angle = Math.atan2(y2 - y1, x2 - x1);
@@ -194,6 +220,7 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
   const canvasElRef = useRef<HTMLCanvasElement>(null);
   const minimapRef = useRef<HTMLCanvasElement>(null);
   const cursorContainerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const fabricRef = useRef<any | null>(null);
   const toolRef = useRef<ToolType>("select");
   const fillColorRef = useRef(fillColor);
@@ -308,26 +335,6 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
       vt[4] = Math.min(Math.max(vt[4], -VIRTUAL_W * zoom), fc.width!);
       vt[5] = Math.min(Math.max(vt[5], -VIRTUAL_H * zoom), fc.height!);
     };
-
-    // ── Infinite panning grid ────────────────────────────────────────────────
-    const drawGrid = () => {
-      const ctx = fc.lowerCanvasEl.getContext("2d")!;
-      const w = fc.width!;
-      const h = fc.height!;
-      const vt = fc.viewportTransform!;
-      const zoom = fc.getZoom();
-      const cell = 40 * zoom;
-      // Wrap pan offset so lines tile seamlessly across the infinite canvas
-      const ox = vt[4] % cell;
-      const oy = vt[5] % cell;
-      ctx.save();
-      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--grid-line").trim() || "rgba(255,255,255,0.035)";
-      ctx.lineWidth = 1;
-      for (let x = ox; x < w; x += cell) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
-      for (let y = oy; y < h; y += cell) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
-      ctx.restore();
-    };
-    fc.on("after:render", drawGrid);
 
     // ── Minimap ──────────────────────────────────────────────────────────────
     // Runs on every after:render so the minimap stays in sync with the main canvas.
@@ -546,12 +553,12 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
     fc.on("text:changed", (opt: any) => {
       const target = opt.target;
       if (!target || !target.shapeId) return;
-      
+
       // Fire the new text string through your existing update pipeline!
       socket?.emit("wb:updateShape", {
         id: target.shapeId,
         changes: { text: target.text, width: target.width },
-        clientVersion: target.__version ?? 0
+        clientVersion: target.__version ?? 0 
       });
     });
 
@@ -1054,6 +1061,57 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
     setHasSelection(false);
   };
 
+  const importImage = (file: File) => {
+    const fc = fabricRef.current;
+    if (!fc || !file.type.startsWith("image/")) return;
+
+    const MAX_BYTES = 5 * 1024 * 1024;
+    if (file.size > MAX_BYTES) {
+      alert("Image is too large. Please choose an image under 5 MB.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = reader.result as string;
+      if (!dataUrl) return;
+      try {
+        // Downscale + recompress via an offscreen canvas so the payload we
+        // broadcast (embedded as `src`) stays well under Socket.IO's buffer limit.
+        const compressed = await compressImageDataUrl(dataUrl, 1200, 0.85);
+
+        const img = await FabricImage.fromURL(compressed, { crossOrigin: "anonymous" }) as any;
+
+        // Drop the image at the center of the current viewport
+        const vt = fc.viewportTransform!;
+        const zoom = fc.getZoom();
+        const cx = (fc.width! / 2 - vt[4]) / zoom;
+        const cy = (fc.height! / 2 - vt[5]) / zoom;
+
+        // Scale down large images so they fit comfortably in view
+        const maxSide = 400;
+        const scale = Math.min(1, maxSide / Math.max(img.width || 1, img.height || 1));
+
+        img.set({
+          left: cx - ((img.width || 0) * scale) / 2,
+          top: cy - ((img.height || 0) * scale) / 2,
+          scaleX: scale,
+          scaleY: scale,
+          selectable: true,
+        });
+        img.shapeId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        fc.add(img);
+        fc.setActiveObject(img);
+        fc.renderAll();
+        emitCreate(img);
+        setShapeCount(fc.getObjects().length);
+      } catch (err) {
+        console.error("Failed to import image", err);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
   const clearBoard = () => {
     if (!confirm("Clear the whiteboard for everyone?")) return;
     const fc = fabricRef.current;
@@ -1224,6 +1282,25 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
             </button>
           </>
         )}
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="px-2 py-1 rounded text-xs transition-colors"
+          style={{ background: "var(--badge-bg)", color: "var(--text-secondary)" }}
+          title="Import an image onto the whiteboard"
+        >
+          + Image
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) importImage(file);
+            e.target.value = "";
+          }}
+        />
         <button onClick={clearBoard}
           className="px-2 py-1 rounded text-xs transition-colors" style={{ background: "var(--badge-bg)", color: "var(--text-tertiary)" }}>
           Clear All
