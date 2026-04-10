@@ -249,6 +249,18 @@ io.on('connection', (socket) => {
     socket.to(socket.roomId).emit('wb:shapeUnlocked', { id });
   });
 
+  // ─── REACTIONS & RAISE HAND ────────────────────────────────────────────────
+
+  socket.on('reaction', ({ emoji }) => {
+    if (!socket.roomId || !emoji) return;
+    io.to(socket.roomId).emit('reaction', { socketId: socket.id, emoji });
+  });
+
+  socket.on('raiseHand', ({ raised }) => {
+    if (!socket.roomId) return;
+    io.to(socket.roomId).emit('raiseHand', { socketId: socket.id, raised: !!raised });
+  });
+
   // ─── DISCONNECT ────────────────────────────────────────────────────────────
 
   socket.on('disconnect', () => {
@@ -261,6 +273,7 @@ io.on('connection', (socket) => {
     delete room.peers[socket.id];
     room.producers = room.producers.filter(p => p.socketId !== socket.id);
     socket.to(roomId).emit('peer-disconnected', { socketId: socket.id });
+    socket.to(roomId).emit('raiseHand', { socketId: socket.id, raised: false });
     if (Object.keys(room.peers).length === 0) {
       room.router.close();
       rooms.delete(roomId);
