@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
 import Whiteboard from "../../components/Whiteboard";
+import ReactionOverlay, { Reaction } from "../../components/ReactionOverlay";
 
 // ─── Mediasoup globals ────────────────────────────────────────────────────────
 let socket: Socket;
@@ -21,17 +22,6 @@ const MIcon = ({ name, className = "" }: { name: string; className?: string }) =
   </span>
 );
 
-// ─── Floating Reaction System ────────────────────────────────────────────────
-function triggerReaction(emoji: string) {
-  const el = document.createElement("div");
-  el.className = "floating-reaction";
-  el.textContent = emoji;
-  // randomize horizontal offset slightly
-  el.style.left = `${20 + Math.random() * 40}px`;
-  el.style.bottom = "100px";
-  document.body.appendChild(el);
-  el.addEventListener("animationend", () => el.remove());
-}
 
 // ─── Dedicated Video Component to prevent flickering ─────────────────────────
 const RemoteVideo = ({ stream }: { stream: MediaStream }) => {
@@ -73,6 +63,12 @@ export default function RoomPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [showReactions, setShowReactions] = useState(false);
   const [handRaised, setHandRaised] = useState(false);
+  const [raisedHands, setRaisedHands] = useState<Set<string>>(new Set());
+  const [reactions, setReactions] = useState<Reaction[]>([]);
+
+  const removeReaction = useCallback((id: string) => {
+    setReactions(prev => prev.filter(r => r.id !== id));
+  }, []);
   const settingsRef = useRef<HTMLDivElement>(null);
   const reactionsRef = useRef<HTMLDivElement>(null);
 
@@ -121,6 +117,30 @@ export default function RoomPage() {
     });
     socket.on("peer-disconnected", ({ socketId }: any) => {
       setRemoteStreams(prev => prev.filter(s => s.socketId !== socketId));
+      setRaisedHands(prev => {
+        if (!prev.has(socketId)) return prev;
+        const next = new Set(prev);
+        next.delete(socketId);
+        return next;
+      });
+    });
+
+    socket.on("reaction", ({ socketId, emoji }: any) => {
+      const isMe = socketId === socket.id;
+      const label = isMe ? "You" : `Peer ${socketId.substring(0, 4)}`;
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      // Spread spawn across the left third of the viewport so rapid reactions fan out.
+      const x = 24 + Math.random() * (typeof window !== "undefined" ? window.innerWidth / 3 : 320);
+      setReactions(prev => [...prev, { id, emoji, label, x }]);
+    });
+
+    socket.on("raiseHand", ({ socketId, raised }: any) => {
+      setRaisedHands(prev => {
+        const next = new Set(prev);
+        if (raised) next.add(socketId);
+        else next.delete(socketId);
+        return next;
+      });
     });
 
     return () => { socket.disconnect(); };
@@ -362,6 +382,7 @@ export default function RoomPage() {
                   <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
                     You{isMuted ? " (Muted)" : ""}{isCamOff ? " (Cam off)" : ""}
                   </span>
+                  {handRaised && <div className="hand-raised-badge">✋</div>}
                   <video ref={localVideoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
                 </div>
               )}
@@ -370,6 +391,7 @@ export default function RoomPage() {
                   <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
                     Peer ({remote.socketId.substring(0, 4)})
                   </span>
+                  {raisedHands.has(remote.socketId) && <div className="hand-raised-badge">✋</div>}
                   <RemoteVideo stream={remote.stream} />
                 </div>
               ))}
@@ -435,6 +457,7 @@ export default function RoomPage() {
                   <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
                     You{isMuted ? " (Muted)" : ""}
                   </span>
+                  {handRaised && <div className="hand-raised-badge">✋</div>}
                   <video ref={localVideoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
                 </div>
               )}
@@ -443,6 +466,7 @@ export default function RoomPage() {
                   <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
                     Peer ({remote.socketId.substring(0, 4)})
                   </span>
+                  {raisedHands.has(remote.socketId) && <div className="hand-raised-badge">✋</div>}
                   <RemoteVideo stream={remote.stream} />
                 </div>
               ))}
@@ -492,12 +516,16 @@ export default function RoomPage() {
 
           {/* Hand raise */}
           <button
-            onClick={() => setHandRaised(h => !h)}
+            onClick={() => {
+              const next = !handRaised;
+              setHandRaised(next);
+              socket?.emit("raiseHand", { raised: next });
+            }}
             className="meet-btn"
             title={handRaised ? "Lower hand" : "Raise hand"}
             style={handRaised ? { background: "#fde293", color: "#1f1f1f" } : {}}
           >
-            <MIcon name={handRaised ? "front_hand" : "front_hand"} />
+            <MIcon name="front_hand" />
           </button>
 
           {/* Reactions */}
@@ -515,8 +543,7 @@ export default function RoomPage() {
                   <button
                     key={emoji}
                     onClick={() => {
-                      triggerReaction(emoji);
-                      setShowReactions(false);
+                      socket?.emit("reaction", { emoji });
                     }}
                   >
                     {emoji}
@@ -532,6 +559,8 @@ export default function RoomPage() {
           </button>
         </div>
       )}
+
+      <ReactionOverlay reactions={reactions} onComplete={removeReaction} />
     </main>
   );
 }
