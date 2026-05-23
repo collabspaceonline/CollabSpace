@@ -91,12 +91,14 @@ export default function RoomPage() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  // Re-attach local stream whenever the video element mounts or remounts
+  // Re-attach local stream whenever the video element mounts or remounts.
+  // The layout swaps the <video> between full-grid, PiP, and sidebar slots as
+  // participants join/leave, so we re-bind on every layout-affecting change.
   useEffect(() => {
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
     }
-  }, [showWhiteboard, isMediaActive]);
+  }, [showWhiteboard, isMediaActive, remoteStreams.length]);
 
   // ─── Socket setup ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -261,6 +263,21 @@ export default function RoomPage() {
     if (!isMediaActive) await startCamera();
   };
 
+  // ─── Layout helpers ────────────────────────────────────────────────────────
+  const totalParticipants = (isMediaActive ? 1 : 0) + remoteStreams.length;
+  // Picture-in-picture only when there is exactly one local + one remote.
+  const isPipMode =
+    isMediaActive && remoteStreams.length === 1 && totalParticipants === 2;
+
+  // Pick a cols/rows split that stays as square as possible — every tile
+  // ends up the same size because the grid uses 1fr columns and 1fr rows.
+  const gridDims = (() => {
+    const n = Math.max(1, totalParticipants);
+    const cols = Math.ceil(Math.sqrt(n));
+    const rows = Math.ceil(n / cols);
+    return { cols, rows };
+  })();
+
   return (
     <main className="flex h-screen flex-col overflow-hidden" style={{ background: "var(--app-bg)", color: "var(--text-primary)" }}>
 
@@ -375,33 +392,62 @@ export default function RoomPage() {
               </div>
             )}
 
-            {/* Video grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {isMediaActive && (
-                <div className="relative aspect-video bg-black rounded-xl overflow-hidden border-2 border-emerald-500/50">
-                  <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
+            {/* Video stage */}
+            {!isMediaActive && remoteStreams.length === 0 ? (
+              <div className="flex-1 flex flex-col items-center justify-center" style={{ color: "var(--text-tertiary)" }}>
+                <MIcon name="videocam_off" className="!text-[48px] mb-3" />
+                <p className="text-sm">Start camera to join the call</p>
+              </div>
+            ) : isPipMode ? (
+              // 2 people: remote fills the stage, local is a small bottom-right PiP.
+              <div className="relative flex-1 min-h-0 rounded-xl overflow-hidden bg-black" style={{ border: "1px solid var(--border)" }}>
+                {remoteStreams[0] && (
+                  <>
+                    <span className="absolute top-3 left-3 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
+                      Peer ({remoteStreams[0].socketId.substring(0, 4)})
+                    </span>
+                    {raisedHands.has(remoteStreams[0].socketId) && <div className="hand-raised-badge">✋</div>}
+                    <RemoteVideo stream={remoteStreams[0].stream} />
+                  </>
+                )}
+                {/* Local PiP */}
+                <div className="absolute bottom-4 right-4 w-48 md:w-56 lg:w-64 aspect-video rounded-xl overflow-hidden bg-black border-2 border-emerald-500/60 shadow-2xl">
+                  <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-0.5 rounded text-[10px] z-10">
                     You{isMuted ? " (Muted)" : ""}{isCamOff ? " (Cam off)" : ""}
                   </span>
                   {handRaised && <div className="hand-raised-badge">✋</div>}
                   <video ref={localVideoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
                 </div>
-              )}
-              {remoteStreams.map((remote) => (
-                <div key={remote.socketId} className="relative aspect-video bg-black rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-                  <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
-                    Peer ({remote.socketId.substring(0, 4)})
-                  </span>
-                  {raisedHands.has(remote.socketId) && <div className="hand-raised-badge">✋</div>}
-                  <RemoteVideo stream={remote.stream} />
-                </div>
-              ))}
-              {!isMediaActive && remoteStreams.length === 0 && (
-                <div className="col-span-full flex flex-col items-center justify-center h-64" style={{ color: "var(--text-tertiary)" }}>
-                  <MIcon name="videocam_off" className="!text-[48px] mb-3" />
-                  <p className="text-sm">Start camera to join the call</p>
-                </div>
-              )}
-            </div>
+              </div>
+            ) : (
+              // 1 alone, or 3+ — equal-sized tiles in a calculated grid.
+              <div
+                className="flex-1 min-h-0 grid gap-3"
+                style={{
+                  gridTemplateColumns: `repeat(${gridDims.cols}, minmax(0, 1fr))`,
+                  gridTemplateRows: `repeat(${gridDims.rows}, minmax(0, 1fr))`,
+                }}
+              >
+                {isMediaActive && (
+                  <div className="relative bg-black rounded-xl overflow-hidden border-2 border-emerald-500/50">
+                    <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
+                      You{isMuted ? " (Muted)" : ""}{isCamOff ? " (Cam off)" : ""}
+                    </span>
+                    {handRaised && <div className="hand-raised-badge">✋</div>}
+                    <video ref={localVideoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
+                  </div>
+                )}
+                {remoteStreams.map((remote) => (
+                  <div key={remote.socketId} className="relative bg-black rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+                    <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
+                      Peer ({remote.socketId.substring(0, 4)})
+                    </span>
+                    {raisedHands.has(remote.socketId) && <div className="hand-raised-badge">✋</div>}
+                    <RemoteVideo stream={remote.stream} />
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           /* ── Left video panel when whiteboard is open ─────────────────────── */

@@ -7,7 +7,6 @@ import {
   Rect as FabricRect,
   Ellipse as FabricEllipse,
   Line as FabricLine,
-  Path as FabricPath,
   Point as FabricPoint,
   PencilBrush,
   util as fabricUtil,
@@ -16,7 +15,7 @@ import {
   FabricImage,
 } from "fabric";
 
-type ToolType = "select" | "rect" | "circle" | "line" | "arrow" | "pen" | "eraser" | "text";
+type ToolType = "select" | "rect" | "circle" | "line" | "pen" | "eraser" | "text";
 
 // Function to spawn a new Textbox
 function createLiveTextbox(canvas: any, pointer: { x: number, y: number }, defaultText: string = "Type here...") {
@@ -166,16 +165,6 @@ function compressImageDataUrl(dataUrl: string, maxSide: number, quality: number)
   });
 }
 
-/** Build an SVG path string for a line with an open arrowhead at (x2, y2). */
-function makeArrowPath(x1: number, y1: number, x2: number, y2: number, headLen = 16): string {
-  const angle = Math.atan2(y2 - y1, x2 - x1);
-  const hx1 = x2 - headLen * Math.cos(angle - Math.PI / 6);
-  const hy1 = y2 - headLen * Math.sin(angle - Math.PI / 6);
-  const hx2 = x2 - headLen * Math.cos(angle + Math.PI / 6);
-  const hy2 = y2 - headLen * Math.sin(angle + Math.PI / 6);
-  return `M ${x1} ${y1} L ${x2} ${y2} M ${hx1} ${hy1} L ${x2} ${y2} L ${hx2} ${hy2}`;
-}
-
 // Virtual canvas size — users cannot pan completely outside this boundary
 const VIRTUAL_W = 5000;
 const VIRTUAL_H = 5000;
@@ -206,10 +195,23 @@ interface WhiteboardProps {
   theme?: "light" | "dark";
 }
 
+// Per-tool default fill / stroke / stroke-width.
+// For line and pen, `fill` is what the canvas actually uses for the visible
+// stroke colour (see mouse:down for line, brush.color for pen).
+const TOOL_DEFAULTS: Partial<
+  Record<ToolType, { fill?: string; stroke?: string; strokeWidth?: number }>
+> = {
+  rect:   { fill: "transparent", stroke: "#818cf8", strokeWidth: 2 }, // indigo outline
+  circle: { fill: "transparent", stroke: "#fb7185", strokeWidth: 2 }, // rose outline
+  line:   { fill: "#22d3ee", strokeWidth: 3 },                    // cyan
+  pen:    { fill: "#f59e0b", strokeWidth: 3 },                    // amber
+  text:   { fill: "#9ca3af" },                                    // gray-400
+};
+
 export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) {
   const [tool, setTool] = useState<ToolType>("select");
-  const [fillColor, setFillColor] = useState("#4f8ef7");
-  const [strokeColor, setStrokeColor] = useState("#1a1a2e");
+  const [fillColor, setFillColor] = useState("transparent");
+  const [strokeColor, setStrokeColor] = useState("#818cf8");
   const [strokeWidth, setStrokeWidth] = useState(2);
   const [opacity, setOpacity] = useState(1);
   const [wbVersion, setWbVersion] = useState(0);
@@ -242,7 +244,16 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
   const cursorThrottleRef = useRef(0);
 
   // Keep refs in sync with state
-  useEffect(() => { toolRef.current = tool; applyFabricMode(); }, [tool]);
+  useEffect(() => {
+    toolRef.current = tool;
+    const d = TOOL_DEFAULTS[tool];
+    if (d) {
+      if (d.fill !== undefined) setFillColor(d.fill);
+      if (d.stroke !== undefined) setStrokeColor(d.stroke);
+      if (d.strokeWidth !== undefined) setStrokeWidth(d.strokeWidth);
+    }
+    applyFabricMode();
+  }, [tool]);
   useEffect(() => { fillColorRef.current = fillColor; }, [fillColor]);
   useEffect(() => { strokeColorRef.current = strokeColor; }, [strokeColor]);
   useEffect(() => { strokeWidthRef.current = strokeWidth; }, [strokeWidth]);
@@ -255,6 +266,7 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
 
     fc.isDrawingMode = false;
     fc.selection = true;
+    fc.skipTargetFind = false;
     fc.defaultCursor = "default";
 
     switch (toolRef.current) {
@@ -273,7 +285,10 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
       case "select":
         break;
       default:
+        // Shape-drawing tools (rect, circle, line, text): block selecting /
+        // moving existing shapes so a stray click doesn't grab them.
         fc.selection = false;
+        fc.skipTargetFind = true;
         fc.defaultCursor = "crosshair";
         fc.discardActiveObject();
         break;
@@ -478,15 +493,22 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
 
 
         // ✅ Original code: If they clicked empty space, spawn a new one
+        // Guard against an invisible (transparent) fill leaking in from a
+        // previously selected shape tool.
+        const textFill =
+          !fillColorRef.current || fillColorRef.current === "transparent"
+            ? (TOOL_DEFAULTS.text?.fill ?? "#9ca3af")
+            : fillColorRef.current;
+
         const textNode = new Textbox("", {
-          left: pointer.x, 
+          left: pointer.x,
           top: pointer.y,
           width: 200, // Initial width before wrapping
           fontSize: 24,
-          fill: fillColorRef.current,
+          fill: textFill,
           fontFamily: "sans-serif",
           selectable: true,
-          objectCaching: false, 
+          objectCaching: false,
         }) as any;
         
         textNode.shapeId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -505,12 +527,14 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
       originRef.current = { x: pointer.x, y: pointer.y };
 
       if (t === "rect") {
+        const sw = strokeWidthRef.current;
         const r = new FabricRect({
-          left: pointer.x, top: pointer.y,
+          left: pointer.x + sw / 2, top: pointer.y + sw / 2,
           width: 0, height: 0,
           fill: fillColorRef.current,
           stroke: strokeColorRef.current,
-          strokeWidth: strokeWidthRef.current,
+          strokeWidth: sw,
+          strokeUniform: true,
           opacity: opacityRef.current,
           selectable: false,
         }) as any;
@@ -519,12 +543,14 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
         activeShapeRef.current = r;
         emitCreate(r);
       } else if (t === "circle") {
+        const sw = strokeWidthRef.current;
         const c = new FabricEllipse({
-          left: pointer.x, top: pointer.y,
+          left: pointer.x + sw / 2, top: pointer.y + sw / 2,
           rx: 0, ry: 0,
           fill: fillColorRef.current,
           stroke: strokeColorRef.current,
-          strokeWidth: strokeWidthRef.current,
+          strokeWidth: sw,
+          strokeUniform: true,
           opacity: opacityRef.current,
           selectable: false,
         }) as any;
@@ -532,8 +558,7 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
         fc.add(c);
         activeShapeRef.current = c;
         emitCreate(c);
-      } else if (t === "line" || t === "arrow") {
-        // Arrow uses a live line preview; on mouse:up it swaps for a Path.
+      } else if (t === "line") {
         const l = new FabricLine([pointer.x, pointer.y, pointer.x, pointer.y], {
           stroke: fillColorRef.current,
           strokeWidth: strokeWidthRef.current,
@@ -619,23 +644,29 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
 
       if (t === "rect" && activeShapeRef.current) {
         const r = activeShapeRef.current as any;
+        const sw = r.strokeWidth ?? 0;
+        const w = Math.max(0, Math.abs(pointer.x - ox) - sw);
+        const h = Math.max(0, Math.abs(pointer.y - oy) - sw);
         r.set({
-          left: Math.min(ox, pointer.x),
-          top: Math.min(oy, pointer.y),
-          width: Math.abs(pointer.x - ox),
-          height: Math.abs(pointer.y - oy),
+          left: Math.min(ox, pointer.x) + sw / 2,
+          top: Math.min(oy, pointer.y) + sw / 2,
+          width: w,
+          height: h,
         });
         fc.renderAll();
       } else if (t === "circle" && activeShapeRef.current) {
         const c = activeShapeRef.current as any;
+        const sw = c.strokeWidth ?? 0;
+        const rx = Math.max(0, (Math.abs(pointer.x - ox) - sw) / 2);
+        const ry = Math.max(0, (Math.abs(pointer.y - oy) - sw) / 2);
         c.set({
-          left: Math.min(ox, pointer.x),
-          top: Math.min(oy, pointer.y),
-          rx: Math.abs(pointer.x - ox) / 2,
-          ry: Math.abs(pointer.y - oy) / 2,
+          left: Math.min(ox, pointer.x) + sw / 2,
+          top: Math.min(oy, pointer.y) + sw / 2,
+          rx,
+          ry,
         });
         fc.renderAll();
-      } else if ((t === "line" || t === "arrow") && lineRef.current) {
+      } else if (t === "line" && lineRef.current) {
         const line = lineRef.current as any;
         line.x1 = originRef.current!.x;
         line.y1 = originRef.current!.y;
@@ -681,37 +712,8 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
       lineRef.current = null;
       if (!obj) return;
 
-      if (t === "arrow") {
-        // Replace the preview line with a finalized arrow Path.
-        const lx1 = (obj as any).x1 as number;
-        const ly1 = (obj as any).y1 as number;
-        const lx2 = (obj as any).x2 as number;
-        const ly2 = (obj as any).y2 as number;
-        const oldId = (obj as any).shapeId as string;
-
-        fc.remove(obj);
-        emitDelete(oldId);
-
-        // Skip degenerate zero-length arrows
-        const dx = lx2 - lx1, dy = ly2 - ly1;
-        if (Math.sqrt(dx * dx + dy * dy) >= 5) {
-          const arrow = new FabricPath(makeArrowPath(lx1, ly1, lx2, ly2), {
-            stroke: fillColorRef.current,
-            fill: "",
-            strokeWidth: strokeWidthRef.current,
-            opacity: opacityRef.current,
-            selectable: true,
-            strokeLineCap: "round",
-            strokeLineJoin: "round",
-          }) as any;
-          arrow.shapeId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-          fc.add(arrow);
-          emitCreate(arrow);
-        }
-      } else {
-        (obj as any).selectable = true;
-        emitUpdate(obj);
-      }
+      (obj as any).selectable = true;
+      emitUpdate(obj);
       setShapeCount(fc.getObjects().length);
     });
 
@@ -773,7 +775,7 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
         if (obj.fill && typeof obj.fill === "string") setFillColor(obj.fill);
         if (obj.stroke && typeof obj.stroke === "string") setStrokeColor(obj.stroke);
       } else {
-        // line, path (pen/arrow) — primary colour lives in stroke
+        // line, path (pen) — primary colour lives in stroke
         if (obj.stroke && typeof obj.stroke === "string") setFillColor(obj.stroke);
       }
       if (obj.strokeWidth != null) setStrokeWidth(obj.strokeWidth);
@@ -1170,18 +1172,6 @@ export default function Whiteboard({ socket, theme = "dark" }: WhiteboardProps) 
     { id: "rect",   icon: "▭", label: "Rectangle" },
     { id: "circle", icon: "◯", label: "Circle / Ellipse" },
     { id: "line",  icon: "╱", label: "Line" },
-    {
-      id: "arrow",
-      label: "Arrow",
-      icon: (
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-          className="w-4 h-4">
-          <line x1="5" y1="19" x2="19" y2="5" />
-          <polyline points="9 5 19 5 19 15" />
-        </svg>
-      ),
-    },
     { id: "pen",   icon: "✏", label: "Freehand Pen" },
     {
       id: "eraser",
