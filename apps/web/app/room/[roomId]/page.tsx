@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
-import Whiteboard from "../../components/Whiteboard";
+import Whiteboard from "../../components/whiteboard";
 import ReactionOverlay, { Reaction } from "../../components/ReactionOverlay";
 
 // ─── Mediasoup globals ────────────────────────────────────────────────────────
