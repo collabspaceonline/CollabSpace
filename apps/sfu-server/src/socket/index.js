@@ -1,6 +1,7 @@
 const { registerCursorHandlers } = require('./handlers/cursors');
 const { registerReactionHandlers } = require('./handlers/reactions');
 const { registerWhiteboardHandlers } = require('./handlers/whiteboard');
+const { registerScreenShareHandlers } = require('./handlers/screenShare');
 const { registerMediaHandlers } = require('./handlers/media');
 
 /**
@@ -16,6 +17,7 @@ const featureHandlers = [
   registerCursorHandlers,
   registerReactionHandlers,
   registerWhiteboardHandlers,
+  registerScreenShareHandlers,
   registerMediaHandlers, // keep last — tears down the peer/room
 ];
 

@@ -1,10 +1,22 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo, type CSSProperties } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
 import Whiteboard from "../../components/whiteboard";
 import ReactionOverlay, { Reaction } from "../../components/ReactionOverlay";
+import VideoTile from "../../components/VideoTile";
+import { useTileGrid } from "../../components/useTileGrid";
+import {
+  PresentationStage,
+  ScreenShareButton,
+  isScreenSource,
+  isScreenVideoSource,
+  normalizeSource,
+  useRemotePresentations,
+  useScreenShare,
+  type MediaSource,
+} from "../../components/screenshare";
 
 // ─── Mediasoup globals ────────────────────────────────────────────────────────
 let socket: Socket;
@@ -15,6 +27,19 @@ let localStream: MediaStream | null;
 let audioProducer: any;
 let videoProducer: any;
 
+/** The part of a mediasoup Consumer this page actually touches. */
+type TrackConsumer = { kind: "audio" | "video"; track: MediaStreamTrack; close(): void };
+
+/** What the SFU tells us about a producer, in `new-producer` and `getProducers`. */
+type ProducerInfo = { producerId: string; socketId: string; source?: MediaSource };
+
+/**
+ * producerId -> the consumer we built for it, so `producer-closed` can find the
+ * right track to pull out of the right stream. A screen share stopping is an
+ * individual producer closing, not a peer leaving.
+ */
+const consumers = new Map<string, { consumer: TrackConsumer; socketId: string; source: MediaSource }>();
+
 // ─── Material Symbol helper ──────────────────────────────────────────────────
 const MIcon = ({ name, className = "" }: { name: string; className?: string }) => (
   <span className={`material-symbols-rounded ${className}`} style={{ fontSize: 24 }}>
@@ -22,25 +47,22 @@ const MIcon = ({ name, className = "" }: { name: string; className?: string }) =
   </span>
 );
 
-
-// ─── Dedicated Video Component to prevent flickering ─────────────────────────
-const RemoteVideo = ({ stream }: { stream: MediaStream }) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  useEffect(() => {
-    if (videoRef.current && stream) videoRef.current.srcObject = stream;
-  }, [stream]);
-  return (
-    <video
-      ref={videoRef}
-      autoPlay
-      playsInline
-      className="absolute inset-0 w-full h-full object-cover"
-    />
-  );
-};
-
 // ─── Reactions Emoji List ────────────────────────────────────────────────────
 const REACTIONS = ["👍", "❤️", "😂", "🎉", "😮"];
+
+/**
+ * A cols/rows split that stays as square as possible. Paired with `1fr` tracks
+ * it divides the available box between the tiles: every tile is the same size,
+ * and more people means smaller tiles rather than a taller, scrolling list.
+ */
+function gridFor(count: number) {
+  const n = Math.max(1, count);
+  const cols = Math.ceil(Math.sqrt(n));
+  return { cols, rows: Math.ceil(n / cols) };
+}
+
+/** Gap between participant tiles in the board sidebar, in px (Tailwind gap-2). */
+const SIDEBAR_TILE_GAP = 8;
 
 export default function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
@@ -56,9 +78,17 @@ export default function RoomPage() {
   const [remoteStreams, setRemoteStreams] = useState<{ socketId: string; stream: MediaStream }[]>([]);
   const localVideoRef = useRef<HTMLVideoElement>(null);
 
+  // ─── Screen share state ────────────────────────────────────────────────────
+  // Presentations arrive on two channels: the announcement (who is presenting,
+  // via useRemotePresentations) and the pixels (a producer tagged `screen`,
+  // consumed below into this map). They are joined by socket id.
+  const [screenStreams, setScreenStreams] = useState<Record<string, MediaStream>>({});
+  const [pinnedPresenterId, setPinnedPresenterId] = useState<string | null>(null);
+
   // ─── UI state ──────────────────────────────────────────────────────────────
   const [showWhiteboard, setShowWhiteboard] = useState(false);
-  const [socketReady, setSocketReady] = useState(false);
+  const [socketInstance, setSocketInstance] = useState<Socket | null>(null);
+  const [mySocketId, setMySocketId] = useState("");
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [showSettings, setShowSettings] = useState(false);
   const [showReactions, setShowReactions] = useState(false);
@@ -71,6 +101,41 @@ export default function RoomPage() {
   }, []);
   const settingsRef = useRef<HTMLDivElement>(null);
   const reactionsRef = useRef<HTMLDivElement>(null);
+
+  // ─── Screen share wiring ───────────────────────────────────────────────────
+  // The send transport is a module global created long after mount, so the hook
+  // reads it lazily instead of receiving it.
+  const getSendTransport = useCallback(() => sendTransport, []);
+  const screenShare = useScreenShare({ socket: socketInstance, getSendTransport });
+  const presentations = useRemotePresentations(socketInstance);
+
+  const labelFor = useCallback(
+    (socketId: string) => (socketId === mySocketId ? "You" : `Peer (${socketId.substring(0, 4)})`),
+    [mySocketId],
+  );
+
+  // Newest presentation takes the stage, unless the user pinned another one.
+  // The pin falls back automatically when that person stops presenting.
+  const activePresentation = useMemo(() => {
+    if (presentations.length === 0) return null;
+    return (
+      presentations.find(p => p.socketId === pinnedPresenterId) ??
+      presentations[presentations.length - 1] ??
+      null
+    );
+  }, [presentations, pinnedPresenterId]);
+
+  const activeStream = activePresentation
+    ? activePresentation.socketId === mySocketId
+      ? screenShare.stream
+      : screenStreams[activePresentation.socketId] ?? null
+    : null;
+
+  const otherPresenters = activePresentation
+    ? presentations
+        .filter(p => p.socketId !== activePresentation.socketId)
+        .map(p => ({ socketId: p.socketId, label: labelFor(p.socketId) }))
+    : [];
 
   // ─── Apply theme to document ───────────────────────────────────────────────
   useEffect(() => {
@@ -92,13 +157,14 @@ export default function RoomPage() {
   }, []);
 
   // Re-attach local stream whenever the video element mounts or remounts.
-  // The layout swaps the <video> between full-grid, PiP, and sidebar slots as
-  // participants join/leave, so we re-bind on every layout-affecting change.
+  // The layout swaps the <video> between full-grid, PiP, sidebar and filmstrip
+  // slots as participants join/leave and presentations start, so we re-bind on
+  // every layout-affecting change.
   useEffect(() => {
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
     }
-  }, [showWhiteboard, isMediaActive, remoteStreams.length]);
+  }, [showWhiteboard, isMediaActive, remoteStreams.length, activePresentation]);
 
   // ─── Socket setup ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -110,15 +176,37 @@ export default function RoomPage() {
       reconnectionDelay: 1000,
     });
 
-    socket.on("connect", () => { setIsConnected(true); setSocketReady(true); });
+    socket.on("connect", () => {
+      setIsConnected(true);
+      setMySocketId(socket.id ?? "");
+      setSocketInstance(socket);
+    });
     socket.on("disconnect", () => setIsConnected(false));
     socket.on("connect_error", (err) => console.error("Socket error:", err.message));
 
-    socket.on("new-producer", ({ producerId, socketId, kind }: any) => {
-      if (device && recvTransport && socketId !== socket.id) consumeRemoteTrack({ producerId, socketId, kind });
+    socket.on("new-producer", ({ producerId, socketId, source }: ProducerInfo) => {
+      if (device && recvTransport && socketId !== socket.id) {
+        consumeRemoteTrack({ producerId, socketId, source });
+      }
     });
-    socket.on("peer-disconnected", ({ socketId }: any) => {
+
+    // One track went away without the peer leaving — how a screen share ends.
+    socket.on("producer-closed", ({ producerId }: { producerId: string }) => {
+      const entry = consumers.get(producerId);
+      if (!entry) return;
+      consumers.delete(producerId);
+      entry.consumer.close();
+      dropTrack(entry.socketId, entry.consumer.track, entry.source);
+    });
+
+    socket.on("peer-disconnected", ({ socketId }: { socketId: string }) => {
       setRemoteStreams(prev => prev.filter(s => s.socketId !== socketId));
+      dropPeerScreen(socketId);
+      for (const [producerId, entry] of consumers) {
+        if (entry.socketId !== socketId) continue;
+        entry.consumer.close();
+        consumers.delete(producerId);
+      }
       setRaisedHands(prev => {
         if (!prev.has(socketId)) return prev;
         const next = new Set(prev);
@@ -183,7 +271,18 @@ export default function RoomPage() {
     });
     sendTransport.on("produce", async (parameters: any, callback: any, errback: any) => {
       try {
-        socket.emit("transport-produce", { kind: parameters.kind, rtpParameters: parameters.rtpParameters }, ({ id }: any) => { callback({ id }); });
+        // appData carries the track's `source` (camera / mic / screen /
+        // screenAudio). mediasoup-client does not send it for us, and without
+        // it the SFU cannot tell a screen share from a webcam.
+        socket.emit(
+          "transport-produce",
+          {
+            kind: parameters.kind,
+            rtpParameters: parameters.rtpParameters,
+            appData: parameters.appData,
+          },
+          ({ id }: any) => { callback({ id }); },
+        );
       } catch (e) { errback(e); }
     });
   };
@@ -205,33 +304,92 @@ export default function RoomPage() {
     if (!localStream) return;
     const videoTrack = localStream.getVideoTracks()[0];
     const audioTrack = localStream.getAudioTracks()[0];
-    if (videoTrack) videoProducer = await sendTransport.produce({ track: videoTrack });
-    if (audioTrack) audioProducer = await sendTransport.produce({ track: audioTrack });
+    if (videoTrack) videoProducer = await sendTransport.produce({ track: videoTrack, appData: { source: "camera" } });
+    if (audioTrack) audioProducer = await sendTransport.produce({ track: audioTrack, appData: { source: "mic" } });
     setIsProducing(true);
-    socket.emit("getProducers", (existing: any[]) => {
-      existing.filter(p => p.socketId !== socket.id).forEach(p => consumeRemoteTrack({ producerId: p.id, socketId: p.socketId, kind: p.kind }));
+    socket.emit("getProducers", (existing: { id: string; socketId: string; source?: MediaSource }[]) => {
+      existing
+        .filter(p => p.socketId !== socket.id)
+        .forEach(p => consumeRemoteTrack({ producerId: p.id, socketId: p.socketId, source: p.source }));
     });
   };
 
-  const consumeRemoteTrack = async ({ producerId, socketId, kind }: any) => {
+  // ─── Incoming tracks ───────────────────────────────────────────────────────
+
+  /** Camera and mic: merged into the peer's one participant stream. */
+  const addCameraTrack = (socketId: string, track: MediaStreamTrack) => {
+    setRemoteStreams(prev => {
+      const idx = prev.findIndex(s => s.socketId === socketId);
+      if (idx >= 0) {
+        const existing = prev[idx]!;
+        const updated = [...prev];
+        updated[idx] = { socketId, stream: new MediaStream([...existing.stream.getTracks(), track]) };
+        return updated;
+      }
+      return [...prev, { socketId, stream: new MediaStream([track]) }];
+    });
+  };
+
+  /** Screen picture and its audio: a separate stream, keyed by presenter. */
+  const addScreenTrack = (socketId: string, track: MediaStreamTrack) => {
+    setScreenStreams(prev => {
+      const existing = prev[socketId];
+      return {
+        ...prev,
+        [socketId]: existing
+          ? new MediaStream([...existing.getTracks(), track])
+          : new MediaStream([track]),
+      };
+    });
+  };
+
+  const dropPeerScreen = (socketId: string) => {
+    setScreenStreams(prev => {
+      if (!prev[socketId]) return prev;
+      const next = { ...prev };
+      delete next[socketId];
+      return next;
+    });
+  };
+
+  const dropTrack = (socketId: string, track: MediaStreamTrack, source: MediaSource) => {
+    // The picture ending means the presentation is over, audio included.
+    if (isScreenVideoSource(source)) return dropPeerScreen(socketId);
+
+    if (isScreenSource(source)) {
+      setScreenStreams(prev => {
+        const existing = prev[socketId];
+        if (!existing) return prev;
+        return { ...prev, [socketId]: new MediaStream(existing.getTracks().filter(t => t !== track)) };
+      });
+      return;
+    }
+
+    setRemoteStreams(prev =>
+      prev.map(s =>
+        s.socketId === socketId
+          ? { socketId, stream: new MediaStream(s.stream.getTracks().filter(t => t !== track)) }
+          : s,
+      ),
+    );
+  };
+
+  // The announcement's `kind` is deliberately ignored — `consumer.kind` is the
+  // authoritative one, and it is what `source` has to be reconciled against.
+  const consumeRemoteTrack = async ({ producerId, socketId, source }: ProducerInfo) => {
     if (!device || !recvTransport) return;
+    if (consumers.has(producerId)) return; // `new-producer` can race `getProducers`
     const d = device; const rt = recvTransport;
     const result = await new Promise<any>((resolve) =>
       socket.emit("consume", { rtpCapabilities: d.rtpCapabilities, producerId }, resolve)
     );
     if (result.error) return;
-    const consumer = await rt.consume(result.params);
-    setRemoteStreams(prev => {
-      const idx = prev.findIndex(s => s.socketId === socketId);
-      if (idx >= 0) {
-        const existing = prev[idx]!;
-        const newStream = new MediaStream([...existing.stream.getTracks(), consumer.track]);
-        const updated = [...prev];
-        updated[idx] = { socketId, stream: newStream };
-        return updated;
-      }
-      return [...prev, { socketId, stream: new MediaStream([consumer.track]) }];
-    });
+    const consumer: TrackConsumer = await rt.consume(result.params);
+    const trackSource = normalizeSource(source, consumer.kind);
+    consumers.set(producerId, { consumer, socketId, source: trackSource });
+
+    if (isScreenSource(trackSource)) addScreenTrack(socketId, consumer.track);
+    else addCameraTrack(socketId, consumer.track);
   };
 
   const toggleMute = () => {
@@ -247,36 +405,113 @@ export default function RoomPage() {
     setIsCamOff(turningOff);
   };
 
-  const endCall = () => {
+  const endCall = async () => {
+    // Stop presenting first: it needs the socket and transport to tell the SFU,
+    // and it is what makes the browser's sharing bar go away.
+    await screenShare.stop();
     if (localStream) localStream.getTracks().forEach(t => t.stop());
     if (sendTransport) { sendTransport.close(); sendTransport = null; }
     if (recvTransport) { recvTransport.close(); recvTransport = null; }
+    consumers.clear();
     audioProducer = null; videoProducer = null; localStream = null; device = null;
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
     setIsMediaActive(false); setDeviceLoaded(false); setIsProducing(false);
-    setIsMuted(false); setIsCamOff(false); setRemoteStreams([]);
+    setIsMuted(false); setIsCamOff(false); setRemoteStreams([]); setScreenStreams({});
     router.push("/");
   };
 
-  // ─── Quick setup: Camera + Connect + Join in one click ─────────────────────
-  const quickStart = async () => {
-    if (!isMediaActive) await startCamera();
-  };
-
   // ─── Layout helpers ────────────────────────────────────────────────────────
+  const selfLabel = `You${isMuted ? " (Muted)" : ""}${isCamOff ? " (Cam off)" : ""}`;
   const totalParticipants = (isMediaActive ? 1 : 0) + remoteStreams.length;
-  // Picture-in-picture only when there is exactly one local + one remote.
+  // Picture-in-picture only when there is exactly one local + one remote, and
+  // nobody is presenting (a presentation owns the stage instead).
   const isPipMode =
-    isMediaActive && remoteStreams.length === 1 && totalParticipants === 2;
+    isMediaActive && remoteStreams.length === 1 && totalParticipants === 2 && !activePresentation;
 
-  // Pick a cols/rows split that stays as square as possible — every tile
-  // ends up the same size because the grid uses 1fr columns and 1fr rows.
-  const gridDims = (() => {
-    const n = Math.max(1, totalParticipants);
-    const cols = Math.ceil(Math.sqrt(n));
-    const rows = Math.ceil(n / cols);
-    return { cols, rows };
-  })();
+  const gridDims = gridFor(totalParticipants);
+
+  // The board sidebar sizes its tiles from its measured box instead of letting
+  // them stretch: it is tall and narrow, so a stretched tile becomes a long
+  // vertical strip rather than a video.
+  const { ref: sidebarTilesRef, grid: sidebarGrid } = useTileGrid(totalParticipants, SIDEBAR_TILE_GAP);
+
+  /** The participant tiles, reused by the grid, the sidebar and the filmstrip. */
+  const participantTiles = (tileClassName?: string, tileStyle?: CSSProperties) => (
+    <>
+      {isMediaActive && (
+        <VideoTile
+          videoRef={localVideoRef}
+          label={selfLabel}
+          muted
+          isSelf
+          handRaised={handRaised}
+          className={tileClassName}
+          style={tileStyle}
+        />
+      )}
+      {remoteStreams.map((remote) => (
+        <VideoTile
+          key={remote.socketId}
+          stream={remote.stream}
+          label={labelFor(remote.socketId)}
+          handRaised={raisedHands.has(remote.socketId)}
+          className={tileClassName}
+          style={tileStyle}
+        />
+      ))}
+    </>
+  );
+
+  const stage = activePresentation && (
+    <PresentationStage
+      presenterLabel={labelFor(activePresentation.socketId)}
+      surface={activePresentation.surface}
+      stream={activeStream}
+      isLocal={activePresentation.socketId === mySocketId}
+      onStopPresenting={() => void screenShare.stop()}
+      others={otherPresenters}
+      onSelectPresenter={setPinnedPresenterId}
+    />
+  );
+
+  /** Camera + Connect + Join. `compact` is the narrow whiteboard-sidebar variant. */
+  const setupButtons = (compact: boolean) => (
+    <div className={`flex flex-wrap justify-center ${compact ? "gap-2 mb-4" : "gap-3 mb-6"}`}>
+      <button onClick={startCamera} disabled={isMediaActive}
+        className={`rounded-lg font-semibold transition-all flex items-center ${compact ? "px-3 py-1.5 text-xs gap-1" : "px-4 py-2 text-sm gap-2"}`}
+        style={{
+          background: "var(--badge-bg)",
+          color: isMediaActive ? "var(--text-tertiary)" : "var(--text-primary)",
+          cursor: isMediaActive ? "not-allowed" : "pointer",
+          opacity: isMediaActive ? 0.5 : 1,
+        }}
+      >
+        <MIcon name="videocam" className={compact ? "!text-[14px]" : "!text-[18px]"} /> Camera
+      </button>
+      <button onClick={loadMediasoupDevice} disabled={!isMediaActive || deviceLoaded}
+        className={`rounded-lg font-semibold transition-all flex items-center ${compact ? "px-3 py-1.5 text-xs gap-1" : "px-4 py-2 text-sm gap-2"}`}
+        style={{
+          background: (!isMediaActive || deviceLoaded) ? "var(--badge-bg)" : "#1a73e8",
+          color: (!isMediaActive || deviceLoaded) ? "var(--text-tertiary)" : "#fff",
+          cursor: (!isMediaActive || deviceLoaded) ? "not-allowed" : "pointer",
+          opacity: (!isMediaActive || deviceLoaded) ? 0.5 : 1,
+        }}
+      >
+        <MIcon name="link" className={compact ? "!text-[14px]" : "!text-[18px]"} /> Connect
+      </button>
+      <button onClick={produceMedia} disabled={!deviceLoaded || isProducing}
+        className={`rounded-lg font-semibold transition-all flex items-center ${compact ? "px-3 py-1.5 text-xs gap-1" : "px-4 py-2 text-sm gap-2"}`}
+        style={{
+          background: (!deviceLoaded || isProducing) ? "var(--badge-bg)" : "#1e8e3e",
+          color: (!deviceLoaded || isProducing) ? "var(--text-tertiary)" : "#fff",
+          cursor: (!deviceLoaded || isProducing) ? "not-allowed" : "pointer",
+          opacity: (!deviceLoaded || isProducing) ? 0.5 : 1,
+        }}
+      >
+        <MIcon name="call" className={compact ? "!text-[14px]" : "!text-[18px]"} /> Join
+      </button>
+    </div>
+  );
 
   return (
     <main className="flex h-screen flex-col overflow-hidden" style={{ background: "var(--app-bg)", color: "var(--text-primary)" }}>
@@ -352,48 +587,23 @@ export default function RoomPage() {
 
         {/* ── Video panel ───────────────────────────────────────────────────── */}
         {!showWhiteboard ? (
-          <div className="flex-1 flex flex-col overflow-auto" style={{ padding: showWhiteboard ? "16px" : "24px" }}>
+          <div className="flex-1 flex flex-col overflow-auto p-6">
             {/* Setup buttons — shown before producing */}
-            {!isProducing && (
-              <div className="flex flex-wrap justify-center gap-3 mb-6">
-                <button onClick={startCamera} disabled={isMediaActive}
-                  className="px-4 py-2 rounded-lg font-semibold text-sm transition-all flex items-center gap-2"
-                  style={{
-                    background: isMediaActive ? "var(--badge-bg)" : "var(--badge-bg)",
-                    color: isMediaActive ? "var(--text-tertiary)" : "var(--text-primary)",
-                    cursor: isMediaActive ? "not-allowed" : "pointer",
-                    opacity: isMediaActive ? 0.5 : 1,
-                  }}
-                >
-                  <MIcon name="videocam" className="!text-[18px]" /> Camera
-                </button>
-                <button onClick={loadMediasoupDevice} disabled={!isMediaActive || deviceLoaded}
-                  className="px-4 py-2 rounded-lg font-semibold text-sm transition-all flex items-center gap-2"
-                  style={{
-                    background: (!isMediaActive || deviceLoaded) ? "var(--badge-bg)" : "#1a73e8",
-                    color: (!isMediaActive || deviceLoaded) ? "var(--text-tertiary)" : "#fff",
-                    cursor: (!isMediaActive || deviceLoaded) ? "not-allowed" : "pointer",
-                    opacity: (!isMediaActive || deviceLoaded) ? 0.5 : 1,
-                  }}
-                >
-                  <MIcon name="link" className="!text-[18px]" /> Connect
-                </button>
-                <button onClick={produceMedia} disabled={!deviceLoaded || isProducing}
-                  className="px-4 py-2 rounded-lg font-semibold text-sm transition-all flex items-center gap-2"
-                  style={{
-                    background: (!deviceLoaded || isProducing) ? "var(--badge-bg)" : "#1e8e3e",
-                    color: (!deviceLoaded || isProducing) ? "var(--text-tertiary)" : "#fff",
-                    cursor: (!deviceLoaded || isProducing) ? "not-allowed" : "pointer",
-                    opacity: (!deviceLoaded || isProducing) ? 0.5 : 1,
-                  }}
-                >
-                  <MIcon name="call" className="!text-[18px]" /> Join
-                </button>
-              </div>
-            )}
+            {!isProducing && setupButtons(false)}
 
             {/* Video stage */}
-            {!isMediaActive && remoteStreams.length === 0 ? (
+            {activePresentation ? (
+              // Someone is presenting: the screen takes the stage and the
+              // people move to a filmstrip beside it.
+              <div className="flex-1 min-h-0 flex gap-3">
+                <div className="flex-1 min-w-0">{stage}</div>
+                {totalParticipants > 0 && (
+                  <div className="w-52 shrink-0 flex flex-col gap-3 overflow-y-auto">
+                    {participantTiles("aspect-video shrink-0")}
+                  </div>
+                )}
+              </div>
+            ) : !isMediaActive && remoteStreams.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center" style={{ color: "var(--text-tertiary)" }}>
                 <MIcon name="videocam_off" className="!text-[48px] mb-3" />
                 <p className="text-sm">Start camera to join the call</p>
@@ -404,20 +614,21 @@ export default function RoomPage() {
                 {remoteStreams[0] && (
                   <>
                     <span className="absolute top-3 left-3 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
-                      Peer ({remoteStreams[0].socketId.substring(0, 4)})
+                      {labelFor(remoteStreams[0].socketId)}
                     </span>
                     {raisedHands.has(remoteStreams[0].socketId) && <div className="hand-raised-badge">✋</div>}
                     <RemoteVideo stream={remoteStreams[0].stream} />
                   </>
                 )}
                 {/* Local PiP */}
-                <div className="absolute bottom-4 right-4 w-48 md:w-56 lg:w-64 aspect-video rounded-xl overflow-hidden bg-black border-2 border-emerald-500/60 shadow-2xl">
-                  <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-0.5 rounded text-[10px] z-10">
-                    You{isMuted ? " (Muted)" : ""}{isCamOff ? " (Cam off)" : ""}
-                  </span>
-                  {handRaised && <div className="hand-raised-badge">✋</div>}
-                  <video ref={localVideoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
-                </div>
+                <VideoTile
+                  videoRef={localVideoRef}
+                  label={selfLabel}
+                  muted
+                  isSelf
+                  handRaised={handRaised}
+                  className="absolute bottom-4 right-4 w-48 md:w-56 lg:w-64 aspect-video shadow-2xl"
+                />
               </div>
             ) : (
               // 1 alone, or 3+ — equal-sized tiles in a calculated grid.
@@ -428,109 +639,63 @@ export default function RoomPage() {
                   gridTemplateRows: `repeat(${gridDims.rows}, minmax(0, 1fr))`,
                 }}
               >
-                {isMediaActive && (
-                  <div className="relative bg-black rounded-xl overflow-hidden border-2 border-emerald-500/50">
-                    <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
-                      You{isMuted ? " (Muted)" : ""}{isCamOff ? " (Cam off)" : ""}
-                    </span>
-                    {handRaised && <div className="hand-raised-badge">✋</div>}
-                    <video ref={localVideoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
-                  </div>
-                )}
-                {remoteStreams.map((remote) => (
-                  <div key={remote.socketId} className="relative bg-black rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-                    <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
-                      Peer ({remote.socketId.substring(0, 4)})
-                    </span>
-                    {raisedHands.has(remote.socketId) && <div className="hand-raised-badge">✋</div>}
-                    <RemoteVideo stream={remote.stream} />
-                  </div>
-                ))}
+                {participantTiles()}
               </div>
             )}
           </div>
         ) : (
           /* ── Left video panel when whiteboard is open ─────────────────────── */
           <div
-            className="flex-1 flex flex-col p-4 overflow-auto"
+            className="flex-1 flex flex-col p-4 overflow-hidden min-h-0"
             style={{ borderRight: "1px solid var(--border)", background: "var(--app-bg)" }}
           >
             {/* Compact setup buttons */}
-            {!isProducing && (
-              <div className="flex flex-wrap justify-center gap-2 mb-4">
-                <button onClick={startCamera} disabled={isMediaActive}
-                  className="px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1"
-                  style={{
-                    background: "var(--badge-bg)",
-                    color: isMediaActive ? "var(--text-tertiary)" : "var(--text-primary)",
-                    opacity: isMediaActive ? 0.5 : 1,
-                    cursor: isMediaActive ? "not-allowed" : "pointer",
-                  }}
-                >
-                  <MIcon name="videocam" className="!text-[14px]" /> Camera
-                </button>
-                <button onClick={loadMediasoupDevice} disabled={!isMediaActive || deviceLoaded}
-                  className="px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1"
-                  style={{
-                    background: (!isMediaActive || deviceLoaded) ? "var(--badge-bg)" : "#1a73e8",
-                    color: (!isMediaActive || deviceLoaded) ? "var(--text-tertiary)" : "#fff",
-                    opacity: (!isMediaActive || deviceLoaded) ? 0.5 : 1,
-                    cursor: (!isMediaActive || deviceLoaded) ? "not-allowed" : "pointer",
-                  }}
-                >
-                  <MIcon name="link" className="!text-[14px]" /> Connect
-                </button>
-                <button onClick={produceMedia} disabled={!deviceLoaded || isProducing}
-                  className="px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1"
-                  style={{
-                    background: (!deviceLoaded || isProducing) ? "var(--badge-bg)" : "#1e8e3e",
-                    color: (!deviceLoaded || isProducing) ? "var(--text-tertiary)" : "#fff",
-                    opacity: (!deviceLoaded || isProducing) ? 0.5 : 1,
-                    cursor: (!deviceLoaded || isProducing) ? "not-allowed" : "pointer",
-                  }}
-                >
-                  <MIcon name="call" className="!text-[14px]" /> Join
-                </button>
-              </div>
+            {!isProducing && setupButtons(true)}
+
+            {/* The presentation keeps its full width and 16:9 shape — it is the
+                thing people are reading. Capped at half the column so it can
+                never squeeze the participants out; the stage letterboxes
+                (object-contain) rather than distorting when that cap bites. */}
+            {activePresentation && (
+              <div className="aspect-video max-h-[50%] mb-4 shrink-0">{stage}</div>
             )}
 
-            <p className="text-[10px] font-mono uppercase tracking-widest mb-3 text-center" style={{ color: "var(--text-tertiary)" }}>
+            <p className="text-[10px] font-mono uppercase tracking-widest mb-3 text-center shrink-0" style={{ color: "var(--text-tertiary)" }}>
               Participants
             </p>
-            <div className="flex flex-col gap-3">
-              {isMediaActive && (
-                <div className="relative aspect-video bg-black rounded-xl overflow-hidden border-2 border-emerald-500/50">
-                  <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
-                    You{isMuted ? " (Muted)" : ""}
-                  </span>
-                  {handRaised && <div className="hand-raised-badge">✋</div>}
-                  <video ref={localVideoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
+
+            {/* Participants share whatever height is left, so the column never
+                scrolls: more people just means smaller tiles. Their size comes
+                from measuring this box (`useTileGrid`) rather than from
+                stretching, which is what keeps every tile 16:9 — two people in
+                a tall column get a row of two landscape tiles, not two long
+                vertical strips. */}
+            {totalParticipants > 0 ? (
+              <div ref={sidebarTilesRef} className="flex-1 min-h-0 overflow-hidden">
+                <div
+                  className="grid justify-center content-start"
+                  style={{
+                    gap: SIDEBAR_TILE_GAP,
+                    gridTemplateColumns: `repeat(${sidebarGrid.cols}, ${sidebarGrid.width}px)`,
+                  }}
+                >
+                  {participantTiles(undefined, { height: sidebarGrid.height })}
                 </div>
-              )}
-              {remoteStreams.map((remote) => (
-                <div key={remote.socketId} className="relative aspect-video bg-black rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-                  <span className="absolute top-2 left-2 bg-black/60 text-white px-2 py-1 rounded text-xs z-10">
-                    Peer ({remote.socketId.substring(0, 4)})
-                  </span>
-                  {raisedHands.has(remote.socketId) && <div className="hand-raised-badge">✋</div>}
-                  <RemoteVideo stream={remote.stream} />
-                </div>
-              ))}
-              {!isMediaActive && remoteStreams.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-10" style={{ color: "var(--text-tertiary)" }}>
-                  <MIcon name="videocam_off" className="!text-[36px] mb-2" />
-                  <p className="text-xs">No participants</p>
-                </div>
-              )}
-            </div>
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center" style={{ color: "var(--text-tertiary)" }}>
+                <MIcon name="videocam_off" className="!text-[36px] mb-2" />
+                <p className="text-xs">No participants</p>
+              </div>
+            )}
           </div>
         )}
 
         {/* ── Whiteboard panel ─────────────────────────────────────────────── */}
-        {showWhiteboard && socketReady && (
+        {showWhiteboard && socketInstance && (
           <div className="w-[60%] flex items-center justify-center p-4" style={{ background: "var(--app-bg)" }}>
             <div className="w-full h-[80vh] flex flex-col overflow-hidden rounded-xl" style={{ border: "1px solid var(--border)" }}>
-              <Whiteboard socket={socket} theme={theme} />
+              <Whiteboard socket={socketInstance} theme={theme} />
             </div>
           </div>
         )}
@@ -559,6 +724,9 @@ export default function RoomPage() {
           >
             <MIcon name={isCamOff ? "videocam_off" : "videocam"} />
           </button>
+
+          {/* Present now */}
+          <ScreenShareButton screenShare={screenShare} disabled={!deviceLoaded} />
 
           {/* Hand raise */}
           <button
@@ -600,7 +768,7 @@ export default function RoomPage() {
           </div>
 
           {/* End Call */}
-          <button onClick={endCall} className="meet-btn meet-btn--end" title="Leave call">
+          <button onClick={() => void endCall()} className="meet-btn meet-btn--end" title="Leave call">
             <MIcon name="call_end" />
           </button>
         </div>
@@ -610,3 +778,21 @@ export default function RoomPage() {
     </main>
   );
 }
+
+// ─── Dedicated Video Component to prevent flickering ─────────────────────────
+// Still used by the PiP layout, where the remote fills the container rather
+// than sitting in a tile of its own.
+const RemoteVideo = ({ stream }: { stream: MediaStream }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    if (videoRef.current && stream) videoRef.current.srcObject = stream;
+  }, [stream]);
+  return (
+    <video
+      ref={videoRef}
+      autoPlay
+      playsInline
+      className="absolute inset-0 w-full h-full object-cover"
+    />
+  );
+};

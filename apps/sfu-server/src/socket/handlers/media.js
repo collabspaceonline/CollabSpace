@@ -4,6 +4,9 @@ const {
   getRoomForSocket,
   addPeer,
   removePeer,
+  addProducer,
+  publicProducer,
+  closeProducer,
   closeRoomIfEmpty,
 } = require('../../rooms/roomStore');
 
@@ -58,18 +61,44 @@ function registerMediaHandlers(io, socket) {
   });
 
   // 3. PRODUCE
-  socket.on('transport-produce', async ({ kind, rtpParameters }, callback) => {
+  // `appData.source` says what the track *is* (camera / mic / screen /
+  // screenAudio). Without it a screen share is indistinguishable from a webcam,
+  // since both arrive as kind 'video'.
+  socket.on('transport-produce', async ({ kind, rtpParameters, appData }, callback) => {
     const room = getRoomForSocket(socket);
     if (!room) return callback({ error: 'Not in a room' });
-    const producer = await room.peers[socket.id].sendTransport.produce({ kind, rtpParameters });
-    room.producers.push({ id: producer.id, socketId: socket.id, kind: producer.kind });
+    const producer = await room.peers[socket.id].sendTransport.produce({
+      kind,
+      rtpParameters,
+      appData: { source: appData?.source },
+    });
+    const record = addProducer(room, socket.id, producer);
 
+    // Drop the record if mediasoup tears the producer down under us (transport
+    // closed, router closed) so `getProducers` never hands out a dead id.
+    producer.on('transportclose', () => {
+      closeProducer(room, socket.id, producer.id);
+    });
+
+    const announcement = { producerId: record.id, socketId: socket.id, kind: record.kind, source: record.source };
     if (producer.kind === 'video') {
-      io.to(socket.roomId).emit('new-producer', { producerId: producer.id, socketId: socket.id, kind: producer.kind });
+      io.to(socket.roomId).emit('new-producer', announcement);
     } else {
-      socket.to(socket.roomId).emit('new-producer', { producerId: producer.id, socketId: socket.id, kind: producer.kind });
+      socket.to(socket.roomId).emit('new-producer', announcement);
     }
     callback({ id: producer.id });
+  });
+
+  // 3b. STOP PRODUCING one track without leaving the call — how a screen share
+  // ends. Peers drop the matching consumer when they see `producer-closed`.
+  socket.on('closeProducer', ({ producerId }, callback) => {
+    const room = getRoomForSocket(socket);
+    if (!room) return callback?.({ closed: false });
+    const closed = closeProducer(room, socket.id, producerId);
+    if (closed) {
+      io.to(socket.roomId).emit('producer-closed', { producerId, socketId: socket.id });
+    }
+    callback?.({ closed });
   });
 
   // 4. CONSUME
@@ -96,10 +125,12 @@ function registerMediaHandlers(io, socket) {
     }
   });
 
+  // Never lists the caller's own producers: it already has those tracks locally,
+  // and consuming your own mic or screen back is at best wasted bandwidth.
   socket.on('getProducers', (callback) => {
     const room = getRoomForSocket(socket);
     if (!room) return callback([]);
-    callback(room.producers.filter((p) => !(p.socketId === socket.id && p.kind === 'audio')));
+    callback(room.producers.filter((p) => p.socketId !== socket.id).map(publicProducer));
   });
 
   // Registered last in socket/index.js, so feature handlers get to broadcast

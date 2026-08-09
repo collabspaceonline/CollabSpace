@@ -31,6 +31,30 @@ const WEBRTC_TRANSPORT_OPTIONS = {
   preferUdp: true,
 };
 
+/**
+ * Every producer carries a `source` so a client can tell a webcam apart from a
+ * screen share — both arrive as `kind: 'video'` otherwise. The client half of
+ * this vocabulary lives in `apps/web/app/components/screenshare/types.ts`.
+ */
+const MEDIA_SOURCES = {
+  CAMERA: 'camera',
+  MIC: 'mic',
+  SCREEN: 'screen',
+  SCREEN_AUDIO: 'screenAudio',
+};
+
+/** What an unlabelled producer is assumed to be — keeps older clients working. */
+const DEFAULT_SOURCE_BY_KIND = {
+  video: MEDIA_SOURCES.CAMERA,
+  audio: MEDIA_SOURCES.MIC,
+};
+
+const KNOWN_SOURCES = Object.values(MEDIA_SOURCES);
+
+/** Display surfaces a peer may announce when presenting (the W3C names). */
+const SHARE_SURFACES = ['browser', 'window', 'monitor'];
+const DEFAULT_SHARE_SURFACE = 'monitor';
+
 module.exports = {
   PORT,
   ANNOUNCED_IP,
@@ -39,4 +63,9 @@ module.exports = {
   WORKER_SETTINGS,
   MEDIA_CODECS,
   WEBRTC_TRANSPORT_OPTIONS,
+  MEDIA_SOURCES,
+  DEFAULT_SOURCE_BY_KIND,
+  KNOWN_SOURCES,
+  SHARE_SURFACES,
+  DEFAULT_SHARE_SURFACE,
 };
