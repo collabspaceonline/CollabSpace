@@ -22,7 +22,21 @@ src/
       whiteboard.js            wb:* shape CRUD (authoritative state + versions)
       cursors.js               wb:cursorMove / cursorLeave / lockShape / unlockShape
       reactions.js             reaction, raiseHand
+      screenShare.js           screen:* — who is presenting, and on what surface
 ```
+
+## Producers carry a `source`
+
+Every producer is tagged `appData.source` — `camera`, `mic`, `screen` or
+`screenAudio` (`MEDIA_SOURCES` in `config.js`). Without it a screen share is
+indistinguishable from a webcam, since both arrive as `kind: 'video'`. The label
+is stored on the producer record and repeated in `new-producer` and
+`getProducers` so clients can route each track.
+
+`room.producers` records hold the live mediasoup `Producer` as `handle`, so
+**never send a record to a client** — map it through `publicProducer` first.
+`closeProducer` ends one track without ending the call, and only ever closes a
+producer belonging to the socket that asked.
 
 ## The rules
 
@@ -90,6 +104,7 @@ the change probably belongs in a module.
      registerCursorHandlers,
      registerReactionHandlers,
      registerWhiteboardHandlers,
+     registerScreenShareHandlers,
      registerChatHandlers,
      registerMediaHandlers, // keep last — tears down the peer/room
    ];

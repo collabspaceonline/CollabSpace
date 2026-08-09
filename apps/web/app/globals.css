@@ -116,6 +116,24 @@ a {
   background: #c5221f;
 }
 
+/* An engaged, non-destructive control — currently only "presenting". */
+.meet-btn.active-on {
+  background: #1a73e8;
+  color: #ffffff;
+}
+
+.meet-btn.active-on:hover {
+  background: #1765cc;
+}
+
+.meet-btn:disabled {
+  cursor: not-allowed;
+}
+
+.meet-btn:disabled:hover {
+  background: var(--control-btn-bg);
+}
+
 .meet-btn--end {
   width: 56px;
   height: 40px;
@@ -254,4 +272,349 @@ a {
 
 .theme-toggle.dark::after {
   transform: translateX(20px);
+}
+
+/* ─── Screen share: source picker ───────────────────────────────────────────── */
+.share-picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  animation: share-fade-in 0.15s ease-out;
+}
+
+.share-picker {
+  width: 100%;
+  max-width: 720px;
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 24px;
+  border-radius: 16px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  animation: share-rise-in 0.18s ease-out;
+}
+
+.share-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.share-picker-header h2 {
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.share-picker-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.share-picker-close:hover {
+  background: var(--control-btn-hover);
+}
+
+.share-picker-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+/* One card per surface. Stacks on narrow screens rather than squashing. */
+@media (max-width: 640px) {
+  .share-picker-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.share-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background-color 0.15s, transform 0.1s;
+}
+
+.share-option:hover {
+  background: var(--surface-hover);
+  border-color: var(--toolbar-btn-active-text);
+}
+
+.share-option:focus-visible {
+  outline: 2px solid var(--toolbar-btn-active-text);
+  outline-offset: 2px;
+}
+
+.share-option:active {
+  transform: scale(0.985);
+}
+
+.share-option-art {
+  width: 100%;
+  height: auto;
+  margin-bottom: 4px;
+  border-radius: 8px;
+  background: var(--badge-bg);
+}
+
+/* The art is one SVG per card; these classes colour its parts. Anything marked
+   `art-active` is the bit that would actually be shared. */
+.share-option-art .art-surface {
+  fill: var(--badge-bg);
+}
+
+.share-option-art .art-window,
+.share-option-art .art-tab,
+.share-option-art .art-content {
+  fill: var(--text-tertiary);
+  opacity: 0.35;
+}
+
+.share-option-art .art-active {
+  fill: var(--toolbar-btn-active-text);
+  opacity: 0.85;
+}
+
+.share-option-art .art-surface.art-active {
+  opacity: 0.25;
+}
+
+.share-option-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.share-option-description {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.share-picker-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* ─── Screen share: error toast ─────────────────────────────────────────────── */
+.share-error {
+  position: fixed;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 210;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 10px 12px 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #ffffff;
+  background: #d93025;
+  box-shadow: var(--shadow-lg);
+  animation: share-rise-in 0.18s ease-out;
+}
+
+.share-error button {
+  display: flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.share-error button:hover {
+  opacity: 1;
+}
+
+/* ─── Screen share: the presentation stage ──────────────────────────────────── */
+.presentation-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #000000;
+}
+
+.presentation-topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  /* Legible over both a white document and a dark IDE. */
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.6), transparent);
+}
+
+.presentation-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.presentation-surface {
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.presentation-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.presentation-action {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.6);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.presentation-action:hover {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+.presentation-action--stop {
+  background: #d93025;
+}
+
+.presentation-action--stop:hover {
+  background: #c5221f;
+}
+
+/* `contain`, never `cover`: cropping a shared screen hides the thing being
+   pointed at. Letterboxing is the correct trade here. */
+.presentation-video {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: contain;
+  background: #000000;
+}
+
+.presentation-placeholder {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.presentation-switcher {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 18px;
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.presentation-switcher-label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.presentation-switcher button {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.16);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.presentation-switcher button:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+@keyframes share-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes share-rise-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* The error toast is already X-centred; keep that while it rises. */
+.share-error {
+  animation-name: share-error-rise-in;
+}
+
+@keyframes share-error-rise-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
 }
