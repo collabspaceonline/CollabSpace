@@ -10,7 +10,7 @@ export default function Home() {
   const router = useRouter();
 
   const joinRoom = () => {
-    const id = roomId.trim();
+    const id = roomId.trim().toUpperCase();
     if (!id) return;
     router.push(`/room/${encodeURIComponent(id)}`);
   };
