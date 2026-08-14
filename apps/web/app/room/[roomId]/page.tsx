@@ -247,7 +247,7 @@ export default function RoomPage() {
   };
 
   const loadMediasoupDevice = async () => {
-    socket.emit("joinRoom", { roomId }, async ({ rtpCapabilities, error }: any) => {
+    socket.emit("joinRoom", { roomId: roomId.toUpperCase() }, async ({ rtpCapabilities, error }: any) => {
       if (error) { 
         console.error("Join room failed:", error); 
         alert(error); // Show the "Room does not exist" error to the user
