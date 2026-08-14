@@ -21,7 +21,7 @@ export default function Home() {
 
     // 2. Temporarily connect to the server to create the room
     const sfuUrl = process.env.NEXT_PUBLIC_SFU_URL || "http://localhost:4000";
-    const tempSocket = io(sfuUrl, { transports: ["websocket"] });
+    const tempSocket = io(sfuUrl, { transports: ["websocket"],secure: true });
 
     tempSocket.on("connect", () => {
       // 3. Emit the createRoom event we built on the server
