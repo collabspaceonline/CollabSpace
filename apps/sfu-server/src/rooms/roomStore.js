@@ -33,6 +33,15 @@ function createRoomState(router) {
       // one peer may present at once, and insertion order gives us "newest".
       presenters: new Map(),
     },
+    document: {
+      file: null,
+      content: '',
+      pdfData: null,
+      annotations: [],
+      version: 0,
+      lastUpdated: null,
+      lastUpdatedBy: null,
+    },
   };
 }
 

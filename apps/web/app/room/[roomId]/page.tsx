@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useCallback, useMemo, type CSSProperties }
 import { useParams, useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
 import Whiteboard from "../../components/whiteboard";
+import DocViewer from "../../components/docview";
 import ReactionOverlay, { Reaction } from "../../components/ReactionOverlay";
 import VideoTile from "../../components/VideoTile";
 import { useTileGrid } from "../../components/useTileGrid";
@@ -86,7 +87,7 @@ export default function RoomPage() {
   const [pinnedPresenterId, setPinnedPresenterId] = useState<string | null>(null);
 
   // ─── UI state ──────────────────────────────────────────────────────────────
-  const [showWhiteboard, setShowWhiteboard] = useState(false);
+  const [activeView, setActiveView] = useState<"video" | "whiteboard" | "doc">("video");
   const [socketInstance, setSocketInstance] = useState<Socket | null>(null);
   const [mySocketId, setMySocketId] = useState("");
   const [theme, setTheme] = useState<"light" | "dark">("dark");
@@ -164,7 +165,7 @@ export default function RoomPage() {
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
     }
-  }, [showWhiteboard, isMediaActive, remoteStreams.length, activePresentation]);
+  }, [activeView, isMediaActive, remoteStreams.length, activePresentation]);
 
   // ─── Socket setup ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -547,18 +548,42 @@ export default function RoomPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Board / Video toggle */}
-          <button
-            onClick={() => setShowWhiteboard(v => !v)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all"
-            style={{
-              background: showWhiteboard ? "var(--toolbar-btn-active)" : "var(--badge-bg)",
-              color: showWhiteboard ? "var(--toolbar-btn-active-text)" : "var(--text-secondary)",
-            }}
-          >
-            <MIcon name={showWhiteboard ? "videocam" : "draw"} className="!text-[18px]" />
-            {showWhiteboard ? "Video" : "Board"}
-          </button>
+          {/* View switcher: Video / Board / Doc */}
+          <div className="flex items-center bg-white/5 p-1 rounded-xl border border-white/10 gap-1">
+            <button
+              onClick={() => setActiveView("video")}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+              style={{
+                background: activeView === "video" ? "var(--toolbar-btn-active)" : "transparent",
+                color: activeView === "video" ? "var(--toolbar-btn-active-text)" : "var(--text-secondary)",
+              }}
+            >
+              <MIcon name="videocam" className="!text-[16px]" />
+              Video
+            </button>
+            <button
+              onClick={() => setActiveView("whiteboard")}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+              style={{
+                background: activeView === "whiteboard" ? "var(--toolbar-btn-active)" : "transparent",
+                color: activeView === "whiteboard" ? "var(--toolbar-btn-active-text)" : "var(--text-secondary)",
+              }}
+            >
+              <MIcon name="draw" className="!text-[16px]" />
+              Board
+            </button>
+            <button
+              onClick={() => setActiveView("doc")}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+              style={{
+                background: activeView === "doc" ? "var(--toolbar-btn-active)" : "transparent",
+                color: activeView === "doc" ? "var(--toolbar-btn-active-text)" : "var(--text-secondary)",
+              }}
+            >
+              <MIcon name="description" className="!text-[16px]" />
+              Document
+            </button>
+          </div>
 
           {/* Settings gear */}
           <div className="relative" ref={settingsRef}>
@@ -592,7 +617,7 @@ export default function RoomPage() {
       <div className="flex-1 flex flex-row overflow-hidden min-h-0">
 
         {/* ── Video panel ───────────────────────────────────────────────────── */}
-        {!showWhiteboard ? (
+        {activeView === "video" ? (
           <div className="flex-1 flex flex-col overflow-auto p-6">
             {/* Setup buttons — shown before producing */}
             {!isProducing && setupButtons(false)}
@@ -650,7 +675,7 @@ export default function RoomPage() {
             )}
           </div>
         ) : (
-          /* ── Left video panel when whiteboard is open ─────────────────────── */
+          /* ── Left video panel when whiteboard or document is open ──────────── */
           <div
             className="flex-1 flex flex-col p-4 overflow-hidden min-h-0"
             style={{ borderRight: "1px solid var(--border)", background: "var(--app-bg)" }}
@@ -698,10 +723,19 @@ export default function RoomPage() {
         )}
 
         {/* ── Whiteboard panel ─────────────────────────────────────────────── */}
-        {showWhiteboard && socketInstance && (
+        {activeView === "whiteboard" && socketInstance && (
           <div className="w-[60%] flex items-center justify-center p-4" style={{ background: "var(--app-bg)" }}>
             <div className="w-full h-[80vh] flex flex-col overflow-hidden rounded-xl" style={{ border: "1px solid var(--border)" }}>
               <Whiteboard socket={socketInstance} theme={theme} />
+            </div>
+          </div>
+        )}
+
+        {/* ── Document View panel ───────────────────────────────────────────── */}
+        {activeView === "doc" && socketInstance && (
+          <div className="w-[60%] flex items-center justify-center p-4" style={{ background: "var(--app-bg)" }}>
+            <div className="w-full h-[80vh] flex flex-col overflow-hidden rounded-xl" style={{ border: "1px solid var(--border)" }}>
+              <DocViewer socket={socketInstance} theme={theme} />
             </div>
           </div>
         )}
