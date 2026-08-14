@@ -247,8 +247,14 @@ export default function RoomPage() {
   };
 
   const loadMediasoupDevice = async () => {
-    socket.emit("joinRoom", { roomId }, async ({ rtpCapabilities, error }: any) => {
-      if (error) { console.error("Join room failed:", error); return; }
+    const safeRoomId = decodeURIComponent(roomId).toUpperCase();
+    socket.emit("joinRoom", { roomId: safeRoomId }, async ({ rtpCapabilities, error }: any) => {
+      if (error) { 
+        console.error("Join room failed:", error); 
+        alert(error); // Show the "Room does not exist" error to the user
+        router.push("/"); // Redirect them back to your home page
+        return; 
+      }
       const { Device } = await import("mediasoup-client");
       device = new Device();
       await device.load({ routerRtpCapabilities: rtpCapabilities });

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { io } from "socket.io-client";
 import Image from "next/image";
 
 export default function Home() {
@@ -9,14 +10,38 @@ export default function Home() {
   const router = useRouter();
 
   const joinRoom = () => {
-    const id = roomId.trim();
+    const id = roomId.trim().toUpperCase();
     if (!id) return;
     router.push(`/room/${encodeURIComponent(id)}`);
   };
 
   const createRoom = () => {
+    // 1. Generate the random ID
     const id = Math.random().toString(36).substring(2, 8).toUpperCase();
-    router.push(`/room/${id}`);
+
+    // 2. Temporarily connect to the server to create the room
+    const sfuUrl = process.env.NEXT_PUBLIC_SFU_URL || "http://localhost:4000";
+    const tempSocket = io(sfuUrl, { transports: ["websocket"],secure: true });
+
+    tempSocket.on("connect", () => {
+      // 3. Emit the createRoom event we built on the server
+      tempSocket.emit("createRoom", { roomId: id }, (response: any) => {
+        if (response.error) {
+          alert("Error creating room: " + response.error);
+          tempSocket.disconnect();
+          return;
+        }
+        
+        // 4. Once successful, clean up the temporary socket and navigate
+        tempSocket.disconnect();
+        router.push(`/room/${id}`);
+      });
+    });
+
+    tempSocket.on("connect_error", () => {
+      alert("Could not connect to the server to create a room.");
+      tempSocket.disconnect();
+    });
   };
 
   return (
