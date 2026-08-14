@@ -1,6 +1,7 @@
 const { createWebRtcTransport } = require('../../mediasoup/transport');
 const {
-  getOrCreateRoom,
+  createRoom,
+  getRoom,
   getRoomForSocket,
   addPeer,
   removePeer,
@@ -15,10 +16,26 @@ const {
  * consuming tracks. Also owns peer/producer cleanup on disconnect.
  */
 function registerMediaHandlers(io, socket) {
-  // 0. Join a room
+  socket.on('createRoom', async ({ roomId }, callback) => {
+    try {
+      await createRoom(roomId);
+      callback({ success: true, message: 'Room created successfully' });
+    } catch (err) {
+      callback({ error: err.message });
+    }
+  });
+
+  // UPDATED: 0b. Join an existing room (Participants will call this)
   socket.on('joinRoom', async ({ roomId }, callback) => {
     try {
-      const room = await getOrCreateRoom(roomId);
+      // Fetch the room synchronously WITHOUT creating it
+      const room = getRoom(roomId);
+      
+      // Reject if the room doesn't exist
+      if (!room) {
+        return callback({ error: 'Room does not exist. Please check the room number.' });
+      }
+
       socket.roomId = roomId;
       addPeer(room, socket.id);
       socket.join(roomId);

@@ -36,10 +36,14 @@ function createRoomState(router) {
   };
 }
 
-async function getOrCreateRoom(roomId) {
-  if (rooms.has(roomId)) return rooms.get(roomId);
+async function createRoom(roomId) {
+  if (rooms.has(roomId)) {
+    throw new Error(`Room ${roomId} already exists`);
+  }
+  
   const router = await getWorker().createRouter({ mediaCodecs: MEDIA_CODECS });
   const room = createRoomState(router);
+  
   rooms.set(roomId, room);
   console.log(`🏠 Room created: ${roomId}`);
   return room;
@@ -124,7 +128,7 @@ function closeRoomIfEmpty(roomId) {
 
 module.exports = {
   rooms,
-  getOrCreateRoom,
+  createRoom,
   getRoom,
   getRoomForSocket,
   addPeer,
