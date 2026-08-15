@@ -56,9 +56,10 @@ const PdfPage = React.forwardRef<HTMLDivElement, PdfPageProps>(({
   useEffect(() => {
     if (!containerRef.current) return;
     const observer = new IntersectionObserver((entries) => {
-      if (entries[0].isIntersecting) {
+      const entry = entries[0];
+      if (entry && entry.isIntersecting) {
         setIsVisible(true);
-        if (entries[0].intersectionRatio > 0.5) {
+        if (entry.intersectionRatio > 0.5) {
           onPageVisible(pageNumber);
         }
       }
@@ -102,7 +103,9 @@ const PdfPage = React.forwardRef<HTMLDivElement, PdfPageProps>(({
           viewport: viewport,
         });
 
-        await renderTask.promise;
+        if (renderTask) {
+          await renderTask.promise;
+        }
       } catch (err: any) {
         if (err?.name !== 'RenderingCancelledException') {
           console.error(`Error rendering PDF page ${pageNumber}:`, err);
