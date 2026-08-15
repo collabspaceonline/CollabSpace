@@ -23,9 +23,9 @@ function registerDocumentHandlers(io, socket) {
   });
 
   /**
-   * doc:upload — a user uploads a new .doc, .docx, or .pdf file.
+   * doc:upload — a user uploads a new .doc, .docx, .pptx or .pdf file.
    */
-  socket.on('doc:upload', ({ file, content = '', pdfData = null }) => {
+  socket.on('doc:upload', ({ file, content = '', pdfData = null, docxData = null, pptxData = null }) => {
     const room = getRoomForSocket(socket);
     if (!room || !file) return;
 
@@ -33,6 +33,8 @@ function registerDocumentHandlers(io, socket) {
     room.document.file = file;
     room.document.content = content;
     room.document.pdfData = pdfData;
+    room.document.docxData = docxData;
+    room.document.pptxData = pptxData;
     room.document.annotations = [];
     room.document.lastUpdated = Date.now();
     room.document.lastUpdatedBy = socket.id;
@@ -132,6 +134,8 @@ function registerDocumentHandlers(io, socket) {
     room.document.file = null;
     room.document.content = '';
     room.document.pdfData = null;
+    room.document.docxData = null;
+    room.document.pptxData = null;
     room.document.annotations = [];
     room.document.version += 1;
 

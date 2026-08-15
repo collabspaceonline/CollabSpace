@@ -1,4 +1,4 @@
-export type DocType = 'docx' | 'doc' | 'pdf' | 'text';
+export type DocType = 'docx' | 'doc' | 'pdf' | 'text' | 'pptx' | 'ppt';
 
 export interface DocFileInfo {
   name: string;
@@ -29,6 +29,8 @@ export interface DocState {
   file: DocFileInfo | null;
   content: string;
   pdfData: string | null;
+  docxData?: string | null;
+  pptxData?: string | null;
   annotations: DocAnnotation[];
   version: number;
   lastUpdated?: number | null;

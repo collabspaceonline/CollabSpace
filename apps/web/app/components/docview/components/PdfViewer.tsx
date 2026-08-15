@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useImperativeHandle } from 'react';
 import { DocAnnotation, AnnotationTool } from '../types';
 
 interface PdfViewerProps {
@@ -14,68 +14,62 @@ interface PdfViewerProps {
   theme?: 'light' | 'dark';
 }
 
-export const PdfViewer: React.FC<PdfViewerProps> = ({
-  pdfData,
-  currentPage,
-  onTotalPagesChange,
+interface PdfPageProps {
+  pdfDoc: any;
+  pageNumber: number;
+  zoom: number;
+  theme: 'light' | 'dark';
+  annotations: DocAnnotation[];
+  activeTool: AnnotationTool;
+  activeColor: string;
+  onAddAnnotation: (annotation: DocAnnotation) => void;
+  onDeleteAnnotation: (id: string) => void;
+  onPageVisible: (pageNumber: number) => void;
+}
+
+const PdfPage = React.forwardRef<HTMLDivElement, PdfPageProps>(({
+  pdfDoc,
+  pageNumber,
+  zoom,
+  theme,
   annotations,
-  onAddAnnotation,
-  onDeleteAnnotation,
   activeTool,
   activeColor,
-  zoom = 100,
-  theme = 'dark',
-}) => {
+  onAddAnnotation,
+  onDeleteAnnotation,
+  onPageVisible,
+}, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
   const annotationCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  const [pdfDoc, setPdfDoc] = useState<unknown>(null);
   const [pageRendering, setPageRendering] = useState(false);
   const [pageSize, setPageSize] = useState<{ width: number; height: number }>({ width: 600, height: 800 });
+  const [isVisible, setIsVisible] = useState(false);
 
   const isDrawingRef = useRef(false);
   const currentPathRef = useRef<{ x: number; y: number }[]>([]);
 
-  // 1. Initialize PDF.js and load PDF Document
+  useImperativeHandle(ref, () => containerRef.current as HTMLDivElement);
+
+  // Intersection observer to lazy load rendering
   useEffect(() => {
-    let isCancelled = false;
-
-    async function loadPdf() {
-      try {
-        const pdfjsLib = await import('pdfjs-dist');
-        // Set worker source via unpkg CDN matching the installed version
-        if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-          pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version || '4.0.0'}/build/pdf.worker.min.mjs`;
+    if (!containerRef.current) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting) {
+        setIsVisible(true);
+        if (entries[0].intersectionRatio > 0.5) {
+          onPageVisible(pageNumber);
         }
-
-        const typedPdfLib = pdfjsLib as unknown as {
-          getDocument: (params: { url: string }) => { promise: Promise<{ numPages: number; getPage: (n: number) => Promise<unknown> }> };
-        };
-
-        const loadingTask = typedPdfLib.getDocument({ url: pdfData });
-        const doc = await loadingTask.promise;
-        if (!isCancelled) {
-          setPdfDoc(doc);
-          onTotalPagesChange(doc.numPages);
-        }
-      } catch (err) {
-        console.error('Error loading PDF in PdfViewer:', err);
       }
-    }
+    }, { rootMargin: '200px', threshold: [0, 0.51] });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, [pageNumber, onPageVisible]);
 
-    if (pdfData) {
-      loadPdf();
-    }
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [pdfData, onTotalPagesChange]);
-
-  // 2. Render Current Page
+  // Render PDF Page
   useEffect(() => {
-    if (!pdfDoc || !pdfCanvasRef.current) return;
+    if (!isVisible || !pdfDoc || !pdfCanvasRef.current) return;
 
     let renderTask: { promise: Promise<void>; cancel: () => void } | null = null;
     let isCancelled = false;
@@ -83,14 +77,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     async function renderPage() {
       setPageRendering(true);
       try {
-        const typedDoc = pdfDoc as {
-          getPage: (n: number) => Promise<{
-            getViewport: (opts: { scale: number }) => { width: number; height: number };
-            render: (params: { canvasContext: CanvasRenderingContext2D; viewport: unknown }) => { promise: Promise<void>; cancel: () => void };
-          }>;
-        };
-
-        const page = await typedDoc.getPage(currentPage);
+        const page = await pdfDoc.getPage(pageNumber);
         if (isCancelled || !pdfCanvasRef.current) return;
 
         const scale = (zoom / 100) * 1.5;
@@ -116,9 +103,9 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
         });
 
         await renderTask.promise;
-      } catch (err: unknown) {
-        if ((err as { name?: string })?.name !== 'RenderingCancelledException') {
-          console.error('Error rendering PDF page:', err);
+      } catch (err: any) {
+        if (err?.name !== 'RenderingCancelledException') {
+          console.error(`Error rendering PDF page ${pageNumber}:`, err);
         }
       } finally {
         if (!isCancelled) {
@@ -135,9 +122,9 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
         renderTask.cancel();
       }
     };
-  }, [pdfDoc, currentPage, zoom]);
+  }, [pdfDoc, pageNumber, zoom, isVisible]);
 
-  // 3. Draw Annotations on Annotation Canvas
+  // Draw Annotations
   const redrawAnnotations = useCallback(() => {
     const canvas = annotationCanvasRef.current;
     if (!canvas) return;
@@ -146,7 +133,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    const pageAnnotations = annotations.filter((a) => a.pageNumber === currentPage);
+    const pageAnnotations = annotations.filter((a) => a.pageNumber === pageNumber);
 
     for (const ann of pageAnnotations) {
       ctx.save();
@@ -173,13 +160,13 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
       }
       ctx.restore();
     }
-  }, [annotations, currentPage]);
+  }, [annotations, pageNumber]);
 
   useEffect(() => {
     redrawAnnotations();
   }, [redrawAnnotations, pageSize]);
 
-  // 4. Handle Mouse Drawing & Annotations
+  // Handle Mouse Drawing
   const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = annotationCanvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -198,10 +185,9 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     const coords = getCanvasCoords(e);
 
     if (activeTool === 'eraser') {
-      // Find and remove clicked annotation on current page
       const found = annotations.find(
         (a) =>
-          a.pageNumber === currentPage &&
+          a.pageNumber === pageNumber &&
           a.points?.some((p) => Math.hypot(p.x - coords.x, p.y - coords.y) < 20)
       );
       if (found) {
@@ -254,7 +240,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     if (currentPathRef.current.length > 1) {
       const newAnnotation: DocAnnotation = {
         id: `ann_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        pageNumber: currentPage,
+        pageNumber: pageNumber,
         type: activeTool === 'highlighter' ? 'highlight' : 'draw',
         color: activeColor,
         strokeWidth: activeTool === 'highlighter' ? 16 : 3,
@@ -269,43 +255,118 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
   return (
     <div
       ref={containerRef}
+      className="relative rounded-xl overflow-hidden shadow-2xl transition-all mb-8 flex-shrink-0"
+      style={{
+        border: theme === 'dark' ? '1px solid rgba(255, 255, 255, 0.1)' : '1px solid #cbd5e1',
+        width: pageSize.width || 'auto',
+        height: pageSize.height || 800,
+        backgroundColor: '#ffffff',
+      }}
+    >
+      <canvas ref={pdfCanvasRef} className="block" />
+      <canvas
+        ref={annotationCanvasRef}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        className={`absolute inset-0 ${
+          activeTool === 'select'
+            ? 'cursor-default'
+            : activeTool === 'eraser'
+            ? 'cursor-crosshair'
+            : 'cursor-crosshair'
+        }`}
+      />
+      {pageRendering && (
+        <div className="absolute inset-0 bg-black/20 backdrop-blur-[2px] flex items-center justify-center text-xs font-semibold text-white">
+          Rendering Page {pageNumber}...
+        </div>
+      )}
+    </div>
+  );
+});
+PdfPage.displayName = 'PdfPage';
+
+export const PdfViewer: React.FC<PdfViewerProps & { onPageChange?: (page: number) => void }> = ({
+  pdfData,
+  currentPage,
+  onTotalPagesChange,
+  onPageChange,
+  annotations,
+  onAddAnnotation,
+  onDeleteAnnotation,
+  activeTool,
+  activeColor,
+  zoom = 100,
+  theme = 'dark',
+}) => {
+  const [pdfDoc, setPdfDoc] = useState<any>(null);
+  const [totalPages, setTotalPages] = useState(0);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const lastEmittedPage = useRef(currentPage);
+
+  useEffect(() => {
+    let isCancelled = false;
+    async function loadPdf() {
+      try {
+        const pdfjsLib = await import('pdfjs-dist');
+        if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+          pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version || '4.0.0'}/build/pdf.worker.min.mjs`;
+        }
+        const loadingTask = pdfjsLib.getDocument({ url: pdfData });
+        const doc = await loadingTask.promise;
+        if (!isCancelled) {
+          setPdfDoc(doc);
+          setTotalPages(doc.numPages);
+          onTotalPagesChange(doc.numPages);
+        }
+      } catch (err) {
+        console.error('Error loading PDF in PdfViewer:', err);
+      }
+    }
+    if (pdfData) loadPdf();
+    return () => { isCancelled = true; };
+  }, [pdfData, onTotalPagesChange]);
+
+  // Scroll to page when currentPage changes from toolbar
+  useEffect(() => {
+    if (currentPage !== lastEmittedPage.current) {
+      if (pageRefs.current[currentPage - 1]) {
+        pageRefs.current[currentPage - 1]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      lastEmittedPage.current = currentPage;
+    }
+  }, [currentPage]);
+
+  return (
+    <div
+      ref={scrollContainerRef}
       className="flex-1 flex flex-col items-center justify-start overflow-auto p-4 md:p-8 select-none"
     >
-      <div
-        className="relative rounded-xl overflow-hidden shadow-2xl transition-all"
-        style={{
-          border: theme === 'dark' ? '1px solid rgba(255, 255, 255, 0.1)' : '1px solid #cbd5e1',
-          width: pageSize.width || 'auto',
-          height: pageSize.height || 'auto',
-          backgroundColor: '#ffffff',
-        }}
-      >
-        {/* PDF Rendering Canvas */}
-        <canvas ref={pdfCanvasRef} className="block" />
-
-        {/* Annotation Layer Canvas */}
-        <canvas
-          ref={annotationCanvasRef}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-          className={`absolute inset-0 ${
-            activeTool === 'select'
-              ? 'cursor-default'
-              : activeTool === 'eraser'
-              ? 'cursor-crosshair'
-              : 'cursor-crosshair'
-          }`}
+      {pdfDoc && Array.from({ length: totalPages }).map((_, idx) => (
+        <PdfPage
+          key={idx}
+          ref={(el) => {
+            pageRefs.current[idx] = el;
+          }}
+          pdfDoc={pdfDoc}
+          pageNumber={idx + 1}
+          zoom={zoom}
+          theme={theme}
+          annotations={annotations}
+          activeTool={activeTool}
+          activeColor={activeColor}
+          onAddAnnotation={onAddAnnotation}
+          onDeleteAnnotation={onDeleteAnnotation}
+          onPageVisible={(page) => {
+            if (onPageChange && page !== currentPage) {
+              onPageChange(page);
+            }
+          }}
         />
-
-        {/* Loading overlay indicator */}
-        {pageRendering && (
-          <div className="absolute inset-0 bg-black/20 backdrop-blur-[2px] flex items-center justify-center text-xs font-semibold text-white">
-            Rendering Page...
-          </div>
-        )}
-      </div>
+      ))}
     </div>
   );
 };

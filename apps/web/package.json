@@ -14,12 +14,14 @@
   "dependencies": {
     "@opennextjs/cloudflare": "^1.7.0",
     "@repo/ui": "*",
+    "docx-preview": "^0.4.0",
     "fabric": "^7.2.0",
     "framer-motion": "^12.38.0",
     "mammoth": "^1.12.1",
     "mediasoup-client": "^3.18.7",
     "next": "16.1.5",
     "pdfjs-dist": "^6.2.108",
+    "pptx-preview": "^1.0.7",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "socket.io-client": "^4.8.3"

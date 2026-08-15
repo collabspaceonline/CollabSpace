@@ -14,6 +14,8 @@ export function emitDocUpload(
     file: DocFileInfo;
     content: string;
     pdfData: string | null;
+    docxData?: string | null;
+    pptxData?: string | null;
   }
 ) {
   socket.emit('doc:upload', payload);

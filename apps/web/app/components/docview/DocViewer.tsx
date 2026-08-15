@@ -5,6 +5,8 @@ import { useDocSync } from './hooks/useDocSync';
 import { DocToolbar } from './components/DocToolbar';
 import { RichTextEditor } from './components/RichTextEditor';
 import { PdfViewer } from './components/PdfViewer';
+import { DocxViewer } from './components/DocxViewer';
+import { PptxViewer } from './components/PptxViewer';
 import { ACCEPTED_EXTENSIONS } from './constants';
 
 interface DocViewerProps {
@@ -68,6 +70,26 @@ export const DocViewer: React.FC<DocViewerProps> = ({ socket, theme = 'dark' }) 
       const a = document.createElement('a');
       a.href = docState.pdfData;
       a.download = docState.file.name || 'document.pdf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return;
+    }
+
+    if (docState.file.type === 'docx' && docState.docxData) {
+      const a = document.createElement('a');
+      a.href = docState.docxData;
+      a.download = docState.file.name || 'document.docx';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return;
+    }
+
+    if ((docState.file.type === 'pptx' || docState.file.type === 'ppt') && docState.pptxData) {
+      const a = document.createElement('a');
+      a.href = docState.pptxData;
+      a.download = docState.file.name || 'document.pptx';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -164,7 +186,7 @@ export const DocViewer: React.FC<DocViewerProps> = ({ socket, theme = 'dark' }) 
               <div>
                 <h3 className="text-base font-semibold text-white">Upload a document</h3>
                 <p className="text-xs text-white/60 mt-1">
-                  Drag and drop your <strong>.docx</strong>, <strong>.doc</strong>, or <strong>.pdf</strong> file to view and edit in real time with everyone.
+                  Drag and drop your <strong>.docx</strong>, <strong>.pptx</strong>, or <strong>.pdf</strong> file to view and edit in real time with everyone.
                 </p>
               </div>
 
@@ -198,6 +220,7 @@ export const DocViewer: React.FC<DocViewerProps> = ({ socket, theme = 'dark' }) 
             pdfData={docState.pdfData}
             currentPage={currentPage}
             onTotalPagesChange={setTotalPages}
+            onPageChange={setCurrentPage}
             annotations={docState.annotations}
             onAddAnnotation={addAnnotation}
             onDeleteAnnotation={deleteAnnotation}
@@ -205,6 +228,20 @@ export const DocViewer: React.FC<DocViewerProps> = ({ socket, theme = 'dark' }) 
             activeColor={activeColor}
             zoom={zoom}
             theme={theme}
+          />
+        ) : docState.file.type === 'docx' && docState.docxData ? (
+          /* DOCX Viewer */
+          <DocxViewer
+            docxData={docState.docxData}
+            theme={theme}
+            zoom={zoom}
+          />
+        ) : (docState.file.type === 'pptx' || docState.file.type === 'ppt') && docState.pptxData ? (
+          /* PPTX Viewer */
+          <PptxViewer
+            pptxData={docState.pptxData}
+            theme={theme}
+            zoom={zoom}
           />
         ) : (
           /* Word / Rich Text Editor */

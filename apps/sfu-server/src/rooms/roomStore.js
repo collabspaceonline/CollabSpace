@@ -37,6 +37,8 @@ function createRoomState(router) {
       file: null,
       content: '',
       pdfData: null,
+      docxData: null,
+      pptxData: null,
       annotations: [],
       version: 0,
       lastUpdated: null,

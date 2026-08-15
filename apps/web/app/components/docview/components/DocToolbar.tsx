@@ -49,6 +49,8 @@ export const DocToolbar: React.FC<DocToolbarProps> = ({
   };
 
   const isPdf = file?.type === 'pdf';
+  const isDocx = file?.type === 'docx';
+  const isPptx = file?.type === 'pptx' || file?.type === 'ppt';
 
   return (
     <div
@@ -76,7 +78,7 @@ export const DocToolbar: React.FC<DocToolbarProps> = ({
           style={{
             background: 'linear-gradient(135deg, #1a73e8 0%, #4285f4 100%)',
           }}
-          title="Upload .docx, .doc, or .pdf"
+          title="Upload .docx, .pptx, or .pdf"
         >
           <span className="material-symbols-rounded !text-[16px]">upload_file</span>
           <span>{isUploading ? 'Uploading...' : 'Upload Doc'}</span>
@@ -100,9 +102,8 @@ export const DocToolbar: React.FC<DocToolbarProps> = ({
         )}
       </div>
 
-      {/* Center: Contextual Tools (Rich Text formatting or PDF tools) */}
       <div className="flex items-center gap-1 flex-wrap">
-        {file && !isPdf && onFormatText && (
+        {file && !isPdf && !isDocx && !isPptx && onFormatText && (
           <div className="flex items-center gap-0.5 bg-white/5 p-1 rounded-lg border border-white/10">
             <button
               onClick={() => onFormatText('bold')}

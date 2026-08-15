@@ -6,6 +6,8 @@ export function getDocType(fileName: string): DocType {
   if (ext === 'pdf') return 'pdf';
   if (ext === 'docx') return 'docx';
   if (ext === 'doc') return 'doc';
+  if (ext === 'pptx') return 'pptx';
+  if (ext === 'ppt') return 'ppt';
   return 'text';
 }
 
@@ -56,6 +58,8 @@ export async function processUploadedFile(file: File): Promise<{
   fileInfo: DocFileInfo;
   content: string;
   pdfData: string | null;
+  docxData?: string | null;
+  pptxData?: string | null;
 }> {
   const docType = getDocType(file.name);
   const fileInfo: DocFileInfo = {
@@ -71,16 +75,42 @@ export async function processUploadedFile(file: File): Promise<{
       fileInfo,
       content: '',
       pdfData: dataUrl,
+      docxData: null,
+      pptxData: null,
     };
   }
 
-  if (docType === 'docx' || docType === 'doc') {
+  if (docType === 'docx') {
+    const dataUrl = await readFileAsDataURL(file);
+    return {
+      fileInfo,
+      content: '',
+      pdfData: null,
+      docxData: dataUrl,
+      pptxData: null,
+    };
+  }
+
+  if (docType === 'pptx' || docType === 'ppt') {
+    const dataUrl = await readFileAsDataURL(file);
+    return {
+      fileInfo,
+      content: '',
+      pdfData: null,
+      docxData: null,
+      pptxData: dataUrl,
+    };
+  }
+
+  if (docType === 'doc') {
     const buffer = await readFileAsArrayBuffer(file);
     const html = await parseDocx(buffer);
     return {
       fileInfo,
       content: html,
       pdfData: null,
+      docxData: null,
+      pptxData: null,
     };
   }
 
@@ -90,5 +120,7 @@ export async function processUploadedFile(file: File): Promise<{
     fileInfo,
     content: `<p>${text.replace(/\n/g, '<br/>')}</p>`,
     pdfData: null,
+    docxData: null,
+    pptxData: null,
   };
 }

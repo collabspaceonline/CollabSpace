@@ -16,6 +16,8 @@ const INITIAL_DOC_STATE: DocState = {
   file: null,
   content: '',
   pdfData: null,
+  docxData: null,
+  pptxData: null,
   annotations: [],
   version: 0,
   lastUpdated: null,
@@ -129,11 +131,18 @@ export function useDocSync(socket: Socket | null) {
   const uploadDocument = useCallback(
     async (file: File) => {
       if (!socket) return;
+
+      const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
+      if (file.size > MAX_FILE_SIZE) {
+        setUploadError(`File is too large. Maximum supported size is 25MB.`);
+        return;
+      }
+
       setIsUploading(true);
       setUploadError(null);
       try {
-        const { fileInfo, content, pdfData } = await processUploadedFile(file);
-        emitDocUpload(socket, { file: fileInfo, content, pdfData });
+        const { fileInfo, content, pdfData, docxData, pptxData } = await processUploadedFile(file);
+        emitDocUpload(socket, { file: fileInfo, content, pdfData, docxData, pptxData });
       } catch (err: unknown) {
         console.error('Document upload error:', err);
         setUploadError((err as Error)?.message || 'Failed to process document');
