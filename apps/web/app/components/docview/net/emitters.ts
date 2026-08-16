@@ -8,6 +8,14 @@ export function requestDocState(
   socket.emit('doc:getState', callback);
 }
 
+export function emitDocUploadStarted(socket: Socket) {
+  socket.emit('doc:uploadStarted');
+}
+
+export function emitDocUploadFailed(socket: Socket) {
+  socket.emit('doc:uploadFailed');
+}
+
 export function emitDocUpload(
   socket: Socket,
   payload: {

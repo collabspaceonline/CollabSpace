@@ -4,6 +4,8 @@ import { DocAnnotation, DocState } from '../types';
 import { processUploadedFile } from '../lib/fileParser';
 import {
   requestDocState,
+  emitDocUploadStarted,
+  emitDocUploadFailed,
   emitDocUpload,
   emitDocUpdate,
   emitAddAnnotation,
@@ -45,6 +47,15 @@ export function useDocSync(socket: Socket | null) {
 
     const handleDocLoaded = (state: DocState) => {
       setDocState(state);
+      setIsUploading(false);
+    };
+
+    const handleUploadStarted = () => {
+      setIsUploading(true);
+    };
+
+    const handleUploadFailed = () => {
+      setIsUploading(false);
     };
 
     const handleContentUpdated = ({
@@ -109,9 +120,12 @@ export function useDocSync(socket: Socket | null) {
         ...INITIAL_DOC_STATE,
         version,
       });
+      setIsUploading(false);
     };
 
     socket.on('doc:loaded', handleDocLoaded);
+    socket.on('doc:uploadStarted', handleUploadStarted);
+    socket.on('doc:uploadFailed', handleUploadFailed);
     socket.on('doc:contentUpdated', handleContentUpdated);
     socket.on('doc:annotationAdded', handleAnnotationAdded);
     socket.on('doc:annotationDeleted', handleAnnotationDeleted);
@@ -120,6 +134,8 @@ export function useDocSync(socket: Socket | null) {
 
     return () => {
       socket.off('doc:loaded', handleDocLoaded);
+      socket.off('doc:uploadStarted', handleUploadStarted);
+      socket.off('doc:uploadFailed', handleUploadFailed);
       socket.off('doc:contentUpdated', handleContentUpdated);
       socket.off('doc:annotationAdded', handleAnnotationAdded);
       socket.off('doc:annotationDeleted', handleAnnotationDeleted);
@@ -140,12 +156,14 @@ export function useDocSync(socket: Socket | null) {
 
       setIsUploading(true);
       setUploadError(null);
+      emitDocUploadStarted(socket);
       try {
         const { fileInfo, content, pdfData, docxData, pptxData } = await processUploadedFile(file);
         emitDocUpload(socket, { file: fileInfo, content, pdfData, docxData, pptxData });
       } catch (err: unknown) {
         console.error('Document upload error:', err);
         setUploadError((err as Error)?.message || 'Failed to process document');
+        emitDocUploadFailed(socket);
       } finally {
         setIsUploading(false);
       }

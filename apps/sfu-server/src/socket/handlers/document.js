@@ -23,6 +23,22 @@ function registerDocumentHandlers(io, socket) {
   });
 
   /**
+   * doc:uploadStarted — a user started uploading a document. Broadcast to show buffer/loading scene.
+   */
+  socket.on('doc:uploadStarted', () => {
+    if (!socket.roomId) return;
+    socket.to(socket.roomId).emit('doc:uploadStarted');
+  });
+
+  /**
+   * doc:uploadFailed — a user failed to upload a document. Broadcast to hide buffer/loading scene.
+   */
+  socket.on('doc:uploadFailed', () => {
+    if (!socket.roomId) return;
+    socket.to(socket.roomId).emit('doc:uploadFailed');
+  });
+
+  /**
    * doc:upload — a user uploads a new .doc, .docx, .pptx or .pdf file.
    */
   socket.on('doc:upload', ({ file, content = '', pdfData = null, docxData = null, pptxData = null }) => {
