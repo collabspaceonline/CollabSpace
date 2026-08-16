@@ -81,12 +81,13 @@ export async function processUploadedFile(file: File): Promise<{
   }
 
   if (docType === 'docx') {
-    const dataUrl = await readFileAsDataURL(file);
+    const buffer = await readFileAsArrayBuffer(file);
+    const html = await parseDocx(buffer);
     return {
       fileInfo,
-      content: '',
+      content: html,
       pdfData: null,
-      docxData: dataUrl,
+      docxData: null,
       pptxData: null,
     };
   }

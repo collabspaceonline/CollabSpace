@@ -28,12 +28,17 @@ function registerMediaHandlers(io, socket) {
   // UPDATED: 0b. Join an existing room (Participants will call this)
   socket.on('joinRoom', async ({ roomId }, callback) => {
     try {
-      // Fetch the room synchronously WITHOUT creating it
-      const room = getRoom(roomId);
+      let room = getRoom(roomId);
       
-      // Reject if the room doesn't exist
+      // Auto-create room if it doesn't exist (e.g. after page refresh or direct link)
       if (!room) {
-        return callback({ error: 'Room does not exist. Please check the room number.' });
+        try {
+          room = await createRoom(roomId);
+        } catch (err) {
+          // If another request created it concurrently, fetch it
+          room = getRoom(roomId);
+          if (!room) throw err; // Re-throw if it genuinely failed
+        }
       }
 
       socket.roomId = roomId;

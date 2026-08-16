@@ -244,13 +244,13 @@ export const DocViewer: React.FC<DocViewerProps> = ({ socket, theme = 'dark' }) 
             zoom={zoom}
           />
         ) : (
-          /* Word / Rich Text Editor */
           <RichTextEditor
             ref={editorRef}
             content={docState.content}
             onChange={updateContent}
             theme={theme}
             zoom={zoom}
+            socket={socket}
           />
         )}
       </div>
