@@ -245,6 +245,8 @@ export const DocViewer: React.FC<DocViewerProps> = ({ socket, theme = 'dark' }) 
           />
         ) : (
           <RichTextEditor
+            key={docState.file.name + docState.file.size}
+            documentId={docState.file.name + '-' + docState.file.size}
             ref={editorRef}
             content={docState.content}
             onChange={updateContent}

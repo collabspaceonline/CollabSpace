@@ -55,6 +55,7 @@ interface RichTextEditorProps {
   theme?: 'light' | 'dark';
   zoom?: number;
   socket?: Socket | null;
+  documentId?: string;
 }
 
 const TiptapInner = React.forwardRef<any, { provider: WebsocketProvider, ydoc: Y.Doc, initialContent: string, onChange: (c: string) => void, theme: string, zoom: number }>(({ provider, ydoc, initialContent, onChange, theme, zoom }, ref) => {
@@ -168,7 +169,7 @@ const TiptapInner = React.forwardRef<any, { provider: WebsocketProvider, ydoc: Y
 });
 
 export const RichTextEditor = React.forwardRef<{ format: (command: string, value?: string) => void }, RichTextEditorProps>(
-  ({ content, onChange, theme = 'dark', zoom = 100, socket }, ref) => {
+  ({ content, onChange, theme = 'dark', zoom = 100, socket, documentId }, ref) => {
     const [provider, setProvider] = useState<WebsocketProvider | null>(null);
     const ydocRef = useRef<Y.Doc | null>(null);
 
@@ -192,7 +193,11 @@ export const RichTextEditor = React.forwardRef<{ format: (command: string, value
 
       const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
       const roomMatch = pathname.match(/\/room\/([^/]+)/);
-      const roomId = (roomMatch && roomMatch[1]) ? roomMatch[1] : 'global-room';
+      let roomId = (roomMatch && roomMatch[1]) ? roomMatch[1] : 'global-room';
+      
+      if (documentId) {
+        roomId = `${roomId}-${documentId}`;
+      }
 
       const wsProvider = new WebsocketProvider(
         wsUrl,
