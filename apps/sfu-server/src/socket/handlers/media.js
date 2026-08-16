@@ -30,15 +30,8 @@ function registerMediaHandlers(io, socket) {
     try {
       let room = getRoom(roomId);
       
-      // Auto-create room if it doesn't exist (e.g. after page refresh or direct link)
       if (!room) {
-        try {
-          room = await createRoom(roomId);
-        } catch (err) {
-          // If another request created it concurrently, fetch it
-          room = getRoom(roomId);
-          if (!room) throw err; // Re-throw if it genuinely failed
-        }
+        return callback({ error: 'Room does not exist' });
       }
 
       socket.roomId = roomId;
