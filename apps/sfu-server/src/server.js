@@ -11,6 +11,23 @@ const io = new Server(server, SOCKET_IO_OPTIONS);
 
 registerSocketHandlers(io);
 
+// Setup y-websocket server on the same HTTP server
+const WebSocket = require('ws');
+const { setupWSConnection } = require('y-websocket/bin/utils');
+
+const wss = new WebSocket.Server({ noServer: true });
+
+wss.on('connection', setupWSConnection);
+
+server.on('upgrade', (request, socket, head) => {
+  // You may want to restrict the path to /yjs
+  if (request.url.startsWith('/yjs')) {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  }
+});
+
 // The worker must exist before we accept connections — the first `joinRoom`
 // needs it to create a router.
 async function start() {

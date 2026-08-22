@@ -10,7 +10,7 @@ const CORS_OPTIONS = { origin: '*' };
 
 const SOCKET_IO_OPTIONS = {
   cors: { origin: '*', methods: ['GET', 'POST'] },
-  maxHttpBufferSize: 10 * 1024 * 1024, // 10 MB — allow image imports on whiteboard
+  maxHttpBufferSize: 50 * 1024 * 1024, // 50 MB — allow large document uploads up to 25MB (accounting for base64 overhead)
 };
 
 const WORKER_SETTINGS = {
